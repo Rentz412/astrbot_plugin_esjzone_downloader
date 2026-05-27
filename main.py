@@ -51,6 +51,13 @@ class EsjZoneDownloaderPlugin(Star):
         self.parser = EsjParser()
         self.repository = BookRepository(self.data_dir)
         self.auth_service = EsjAuthService(self.data_dir, self.client)
+        debug_cfg = self._cfg("debug", {})
+        if not isinstance(debug_cfg, dict):
+            debug_cfg = {}
+        self.auth_service.configure_debug(
+            enabled=bool(debug_cfg.get("enabled", False)),
+            save_responses=bool(debug_cfg.get("save_auth_responses", True)),
+        )
         self.task_manager = TaskManager()
 
         self.downloader = DownloadService(
@@ -124,6 +131,7 @@ class EsjZoneDownloaderPlugin(Star):
             "/esj d <URL或编号> [epub|txt] [起始章节] [结束章节]\n"
             "                       下载小说，未指定格式默认 EPUB\n"
             "/esj l <邮箱> <密码>    私聊登录并保存 Cookie\n"
+            "/esj usercheck          检查当前用户 ESJZone 登录态\n"
             "/esj logout             私聊清除当前用户 Cookie\n"
             "/esj db on|off|status   管理员开启、关闭或查看 Dashboard\n"
             "/esj clear              管理员清理缓存\n\n"
@@ -249,6 +257,44 @@ class EsjZoneDownloaderPlugin(Star):
         except Exception as exc:
             logger.exception("esj login failed")
             yield event.plain_result(f"登录失败：{exc}")
+
+    @esj.command("usercheck")
+    async def esj_usercheck(self, event: AstrMessageEvent):
+        """检查当前用户 ESJZone 登录态。"""
+        debug_cfg = self._cfg("debug", {})
+        if not isinstance(debug_cfg, dict):
+            debug_cfg = {}
+        debug_enabled = bool(debug_cfg.get("enabled", False))
+        self.auth_service.configure_debug(
+            enabled=debug_enabled,
+            save_responses=bool(debug_cfg.get("save_auth_responses", True)),
+        )
+
+        auth = await self.auth_service.get_auth_context(event)
+        if not auth:
+            yield event.plain_result(
+                "登录态检查失败：当前用户没有有效 ESJZone 登录态。\n\n"
+                "请私聊机器人执行：/esj l <邮箱> <密码>"
+            )
+            return
+
+        summary = self.auth_service.cookie_summary(auth.cookie)
+        debug_lines = ""
+        if debug_enabled:
+            debug_lines = (
+                "\n\n调试模式：已开启\n"
+                f"认证调试目录：{self.auth_service.debug_dir}"
+            )
+
+        yield event.plain_result(
+            "ESJZone 登录态检查通过。\n"
+            f"用户：{auth.username or '已登录'}\n"
+            f"邮箱：{auth.email_masked or '未知'}\n"
+            f"自动刷新：{'是' if auth.refreshed else '否'}\n\n"
+            "关键 Cookie 摘要：\n"
+            f"{summary}"
+            f"{debug_lines}"
+        )
 
     @esj.command("logout")
     async def esj_logout(self, event: AstrMessageEvent, scope: str = ""):

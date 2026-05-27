@@ -92,6 +92,24 @@
       }
     }
   },
+  "debug": {
+    "description": "调试配置",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用调试模式",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后会输出更详细日志，并可保存登录/校验响应样本。调试文件可能包含敏感登录态信息，排查完成后请关闭。"
+      },
+      "save_auth_responses": {
+        "description": "保存认证调试响应",
+        "type": "bool",
+        "default": true,
+        "hint": "启用调试模式时，将登录页、token 响应、登录响应、profile 校验页保存到插件数据目录 debug/auth/。"
+      }
+    }
+  },
   "dashboard": {
     "description": "Dashboard 配置",
     "type": "object",

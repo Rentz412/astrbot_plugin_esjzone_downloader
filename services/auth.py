@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from hashlib import sha256
 from pathlib import Path
@@ -15,8 +16,11 @@ from .models import AuthContext, AuthResult, CookieValidationResult
 from .utils import is_allowed_cookie_domain, mask_email
 
 
-LOGIN_URL = "https://www.esjzone.one/inc/mem_login.php"
-PROFILE_URL = "https://www.esjzone.one/my/profile.html"
+BASE_URL = "https://www.esjzone.one"
+LOGIN_PAGE_URL = f"{BASE_URL}/login"
+AUTH_TOKEN_URL = f"{BASE_URL}/my/login"
+PASSWORD_LOGIN_URL = f"{BASE_URL}/inc/mem_login.php"
+PROFILE_URL = f"{BASE_URL}/my/profile.html"
 
 
 class EsjAuthService:
@@ -26,8 +30,15 @@ class EsjAuthService:
         self.auth_dir = data_dir / "auth"
         self.users_dir = self.auth_dir / "users"
         self.secret_path = self.auth_dir / "secret.key"
+        self.debug_dir = data_dir / "debug" / "auth"
+        self.debug_enabled = False
+        self.debug_save_responses = True
         self.users_dir.mkdir(parents=True, exist_ok=True)
         self._fernet = self._load_or_create_fernet()
+
+    def configure_debug(self, enabled: bool, save_responses: bool = True) -> None:
+        self.debug_enabled = bool(enabled)
+        self.debug_save_responses = bool(save_responses)
 
     def _load_or_create_fernet(self) -> Fernet:
         self.auth_dir.mkdir(parents=True, exist_ok=True)
@@ -43,6 +54,12 @@ class EsjAuthService:
             return self._fernet.decrypt(token.encode("utf-8")).decode("utf-8")
         except InvalidToken as exc:
             raise ValueError("认证数据无法解密，可能 secret.key 已变化") from exc
+
+    def _debug_write_text(self, filename: str, text: str) -> None:
+        if not self.debug_enabled or not self.debug_save_responses:
+            return
+        self.debug_dir.mkdir(parents=True, exist_ok=True)
+        (self.debug_dir / filename).write_text(text, encoding="utf-8", errors="replace")
 
     def get_user_hash(self, event: Any) -> tuple[str, str, str]:
         platform_id = ""
@@ -60,19 +77,20 @@ class EsjAuthService:
     async def login(self, email: str, password: str) -> AuthResult:
         """登录 ESJZone。
 
-        这里不能只读取登录响应的 `response.cookies`，因为站点可能把 Cookie 写入
-        AsyncClient 的 cookie jar，且后续 profile 校验必须沿用同一个会话。
-        因此登录阶段使用独立临时 client：POST 登录 -> 同 client GET profile -> 序列化 client.cookies.jar。
+        ESJZone 当前登录流程不能直接 POST 账号密码到 `/inc/mem_login.php`。
+        需要先访问登录页初始化会话，再通过 `/my/login` 获取 `Authorization`
+        token，最后携带该 token 提交账号密码登录。登录成功后接口可能返回 JSON
+        内部的“伪跳转”地址，因此还需要手动访问跳转页，让服务端会话和 Cookie
+        状态完整落盘。
         """
-        headers = {
-            "User-Agent": self.client.user_agent,
-            "Accept": "*/*",
-            "X-Requested-With": "XMLHttpRequest",
-            "Origin": "https://www.esjzone.one",
-            "Referer": "https://www.esjzone.one/login",
-        }
         client_kwargs: dict[str, Any] = {
-            "headers": {"User-Agent": self.client.user_agent, "Accept": "*/*"},
+            "headers": {
+                "User-Agent": self.client.user_agent,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "zh-CN,zh;q=0.9",
+                "Origin": BASE_URL,
+                "Referer": f"{BASE_URL}/",
+            },
             "follow_redirects": False,
             "timeout": httpx.Timeout(self.client.timeout),
         }
@@ -80,13 +98,73 @@ class EsjAuthService:
             client_kwargs["proxy"] = self.client.proxy
 
         async with httpx.AsyncClient(**client_kwargs) as login_client:
-            response = await login_client.post(
-                LOGIN_URL,
-                data={"email": email, "pwd": password, "remember_me": "on"},
-                headers=headers,
+            # 1. 初始化登录会话，让站点下发初始 Cookie。
+            init_response = await login_client.get(
+                LOGIN_PAGE_URL,
+                headers={
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Referer": f"{BASE_URL}/",
+                },
             )
-            response.raise_for_status()
+            init_response.raise_for_status()
+            self._debug_write_text("login_page.html", init_response.text)
 
+            # 2. 获取 ESJZone 登录接口要求的 Authorization token。
+            token_response = await login_client.post(
+                AUTH_TOKEN_URL,
+                data={"plxf": "getAuthToken"},
+                headers={
+                    "Accept": "text/javascript, text/html, application/xml, text/xml, */*",
+                    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Origin": BASE_URL,
+                    "Referer": AUTH_TOKEN_URL,
+                },
+            )
+            token_response.raise_for_status()
+            self._debug_write_text("auth_token_response.txt", token_response.text)
+            token_match = re.search(r"<JinJing>(.*?)</JinJing>", token_response.text, flags=re.DOTALL)
+            if not token_match:
+                return AuthResult(False, "登录失败：无法获取登录授权 token，可能站点登录接口已变化")
+            authorization_token = token_match.group(1).strip()
+            if not authorization_token:
+                return AuthResult(False, "登录失败：登录授权 token 为空")
+
+            # 3. 携带 Authorization token 提交账号密码。
+            login_response = await login_client.post(
+                PASSWORD_LOGIN_URL,
+                data={"email": email, "pwd": password, "remember_me": "on"},
+                headers={
+                    "Accept": "*/*",
+                    "Authorization": authorization_token,
+                    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Origin": BASE_URL,
+                    "Referer": AUTH_TOKEN_URL,
+                },
+            )
+            login_response.raise_for_status()
+            self._debug_write_text("password_login_response.txt", login_response.text)
+
+            # 4. 登录接口成功时常返回 JSON 内部跳转，而不是 HTTP 301。
+            try:
+                payload = login_response.json()
+            except ValueError:
+                payload = {}
+            redirect_url = str(payload.get("url") or "").replace("\\/", "/")
+            if redirect_url:
+                redirect_target = str(httpx.URL(BASE_URL).join(redirect_url))
+                redirect_response = await login_client.get(
+                    redirect_target,
+                    headers={
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                        "Referer": AUTH_TOKEN_URL,
+                    },
+                )
+                redirect_response.raise_for_status()
+                self._debug_write_text("login_redirect.html", redirect_response.text)
+
+            # 5. 用个人资料页作为最终登录态校验依据。
             validation = await self.validate_client_cookie(login_client)
             if not validation.valid:
                 return AuthResult(False, validation.message or "登录失败：Cookie 校验未通过")
@@ -130,7 +208,10 @@ class EsjAuthService:
         try:
             headers = {
                 "User-Agent": self.client.user_agent,
-                "Accept": "*/*",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "zh-CN,zh;q=0.9",
+                "Origin": BASE_URL,
+                "Referer": f"{BASE_URL}/",
                 "Cookie": cookie,
             }
             client_kwargs: dict[str, Any] = {
@@ -145,6 +226,7 @@ class EsjAuthService:
         except Exception as exc:
             return CookieValidationResult(False, unknown=True, message=f"网络错误：{type(exc).__name__}")
 
+        self._debug_write_text("profile_validation.html", html)
         return self._parse_profile_validation(html)
 
     async def validate_client_cookie(self, client: Any) -> CookieValidationResult:
@@ -152,6 +234,7 @@ class EsjAuthService:
             html = await self._fetch_profile_html(client)
         except Exception as exc:
             return CookieValidationResult(False, unknown=True, message=f"网络错误：{type(exc).__name__}")
+        self._debug_write_text("profile_validation.html", html)
         return self._parse_profile_validation(html)
 
     async def refresh_cookie(self, user_hash: str) -> AuthResult:
@@ -278,6 +361,23 @@ class EsjAuthService:
             return CookieValidationResult(True, username=None, message="Cookie 有效")
 
         return CookieValidationResult(False, unknown=True, message="无法识别登录状态")
+
+    def cookie_summary(self, cookie: str) -> str:
+        cookie_map: dict[str, str] = {}
+        for part in cookie.split(";"):
+            name, sep, value = part.strip().partition("=")
+            if sep and name:
+                cookie_map[name] = value
+
+        lines: list[str] = []
+        for name in ("ews_key", "ews_token", "ws_last", "ws_last_visit_code", "ws_last_visit_post"):
+            value = cookie_map.get(name)
+            if value:
+                masked = f"{value[:12]}...{value[-8:]}" if len(value) > 24 else "***"
+                lines.append(f"{name}={masked}")
+            else:
+                lines.append(f"{name}=<未找到>")
+        return "\n".join(lines)
 
     def _load_user_record(self, user_hash: str) -> dict[str, Any] | None:
         path = self._user_file(user_hash)

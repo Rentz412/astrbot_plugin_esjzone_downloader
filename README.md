@@ -35,6 +35,7 @@
 ### 登录与安全
 
 - 支持 ESJZone 自动登录。
+- 支持 `/esj usercheck` 主动检查当前用户登录态。
 - 每个 AstrBot 用户独立保存登录态。
 - 群聊下载也使用发起用户自己的 Cookie。
 - 不使用全局共享 Cookie。
@@ -42,6 +43,7 @@
 - 邮箱、密码、Cookie 使用 Fernet 加密保存。
 - Cookie 失效后会尝试自动刷新。
 - 网络校验失败时不会立即删除 Cookie。
+- 支持调试模式保存认证流程响应样本，便于排查登录接口变化。
 
 ### 本地书库与缓存
 
@@ -159,6 +161,24 @@ astrbot_plugin_esjzone_downloader/
 - 群聊中使用会被拒绝。
 - 登录成功后会加密保存邮箱、密码和 Cookie。
 - 后续查询和下载会使用该用户自己的 Cookie。
+
+---
+
+### `/esj usercheck`
+
+检查当前用户 ESJZone 登录态。
+
+```text
+/esj usercheck
+```
+
+说明：
+
+- 会读取当前 AstrBot 用户保存的登录态。
+- 通过访问 ESJZone 个人资料页 `/my/profile.html` 验证 Cookie 是否有效。
+- Cookie 失效时会尝试使用已保存的账号密码自动刷新。
+- 输出用户名、脱敏邮箱、是否自动刷新，以及关键 Cookie 的脱敏摘要。
+- 如果开启调试模式，会提示认证调试文件保存目录。
 
 ---
 
@@ -392,6 +412,28 @@ books/<book_id>/
 
 ---
 
+### 调试配置 `debug`
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|---|---|---:|---|
+| `enabled` | bool | `false` | 是否启用调试模式 |
+| `save_auth_responses` | bool | `true` | 调试模式下是否保存认证流程响应样本 |
+
+说明：
+
+- 调试模式默认关闭。
+- 开启后，插件会在认证流程中保存登录页、token 响应、密码登录响应、跳转页、profile 校验页等样本。
+- 调试文件保存到：
+
+```text
+data/plugin_data/astrbot_plugin_esjzone_downloader/debug/auth/
+```
+
+- 调试文件可能包含敏感登录态信息，仅建议开发排查时开启。
+- 排查完成后建议关闭调试模式，并按需删除 `debug/auth/` 目录。
+
+---
+
 ### Dashboard 配置 `dashboard`
 
 | 配置项 | 类型 | 默认值 | 说明 |
@@ -447,6 +489,8 @@ data/plugin_data/astrbot_plugin_esjzone_downloader/
 ├─ auth/
 │  ├─ secret.key
 │  └─ users/
+├─ debug/
+│  └─ auth/
 └─ books/
    └─ <book_id>/
       ├─ status.json
@@ -463,6 +507,7 @@ data/plugin_data/astrbot_plugin_esjzone_downloader/
 
 - `auth/secret.key` 是本地加密密钥，请勿泄露。
 - `auth/users/` 保存加密后的用户登录态。
+- `debug/auth/` 在调试模式下保存认证流程响应样本，可能包含敏感信息。
 - `books/<book_id>/` 保存本地书籍数据。
 - 删除 `auth/secret.key` 会导致旧登录数据无法解密。
 
