@@ -1,0 +1,15 @@
+name: astrbot_plugin_esjzone_downloader
+display_name: ESJZone 小说下载器
+desc: 下载 ESJZone 小说并导出 EPUB/TXT，支持自动登录、用户 Cookie 隔离、本地状态复用、ZIP 打包和 Dashboard 管理。
+short_desc: ESJZone 小说 EPUB/TXT 下载器。
+version: v0.1.0
+author: Rentz
+repo: ""
+astrbot_version: ">=4.16,<5"
+support_platforms:
+  - aiocqhttp
+  - telegram
+  - discord
+  - slack
+  - kook
+  - satori

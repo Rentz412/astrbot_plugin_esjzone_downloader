@@ -1,0 +1,135 @@
+{
+  "download": {
+    "description": "下载配置",
+    "type": "object",
+    "items": {
+      "default_format": {
+        "description": "默认导出格式",
+        "type": "string",
+        "options": ["epub", "txt"],
+        "labels": ["EPUB", "TXT"],
+        "default": "epub"
+      },
+      "concurrency": {
+        "description": "章节下载并发数",
+        "type": "int",
+        "default": 5,
+        "hint": "建议 1-10，过高可能触发站点限制。"
+      },
+      "enable_image_download": {
+        "description": "生成 EPUB 时下载封面和正文插图",
+        "type": "bool",
+        "default": true
+      },
+      "request_timeout": {
+        "description": "页面请求超时时间（秒）",
+        "type": "int",
+        "default": 15
+      },
+      "image_timeout": {
+        "description": "图片请求超时时间（秒）",
+        "type": "int",
+        "default": 8
+      },
+      "max_retries": {
+        "description": "章节/图片最大重试次数",
+        "type": "int",
+        "default": 3
+      },
+      "recent_chapter_count": {
+        "description": "最近更新显示章节数",
+        "type": "int",
+        "default": 8
+      },
+      "user_agent": {
+        "description": "请求 User-Agent",
+        "type": "string",
+        "default": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125 Safari/537.36"
+      }
+    }
+  },
+  "zip": {
+    "description": "ZIP 打包配置",
+    "type": "object",
+    "items": {
+      "password_mode": {
+        "description": "压缩包密码模式",
+        "type": "string",
+        "options": ["book_id", "random", "fixed"],
+        "labels": ["esj+书籍ID", "随机密码", "固定密码"],
+        "default": "book_id"
+      },
+      "fixed_password": {
+        "description": "固定压缩包密码",
+        "type": "string",
+        "default": "esjzone"
+      },
+      "random_password_length": {
+        "description": "随机压缩包密码长度",
+        "type": "int",
+        "default": 8
+      }
+    }
+  },
+  "message": {
+    "description": "消息输出配置",
+    "type": "object",
+    "items": {
+      "private_verbose_status": {
+        "description": "私聊输出详细下载状态",
+        "type": "bool",
+        "default": true
+      },
+      "group_mention_user": {
+        "description": "群聊简短提示时 @ 发起用户",
+        "type": "bool",
+        "default": true
+      },
+      "group_verbose_status": {
+        "description": "群聊输出详细下载状态（不推荐）",
+        "type": "bool",
+        "default": false
+      }
+    }
+  },
+  "dashboard": {
+    "description": "Dashboard 配置",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用 Dashboard / WebUI",
+        "type": "bool",
+        "default": false,
+        "hint": "默认关闭以减少资源占用。开启后可在插件 Pages 中查看本地书库、日志和下载文件；公网环境必须启用 Token 验证。"
+      },
+      "auth_enabled": {
+        "description": "启用 Dashboard Token 验证",
+        "type": "bool",
+        "default": true
+      },
+      "token": {
+        "description": "Dashboard 访问 Token",
+        "type": "string",
+        "default": "",
+        "hint": "为空时插件首次启动自动生成；公网环境请务必设置强 token。"
+      }
+    }
+  },
+  "proxy": {
+    "description": "代理配置",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用 HTTP 代理",
+        "type": "bool",
+        "default": false
+      },
+      "url": {
+        "description": "代理地址",
+        "type": "string",
+        "default": "",
+        "hint": "例如 http://localhost:7899 或 socks5://127.0.0.1:7890"
+      }
+    }
+  }
+}
