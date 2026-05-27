@@ -6,6 +6,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
+import httpx
 from bs4 import BeautifulSoup
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -57,33 +58,51 @@ class EsjAuthService:
         return self.users_dir / f"{user_hash}.json"
 
     async def login(self, email: str, password: str) -> AuthResult:
-        response = await self.client.post_form(
-            LOGIN_URL,
-            data={"email": email, "pwd": password, "remember_me": "on"},
-            headers={
-                "X-Requested-With": "XMLHttpRequest",
-                "Origin": "https://www.esjzone.one",
-                "Referer": "https://www.esjzone.one/login",
-            },
-            retries=1,
-        )
+        """登录 ESJZone。
 
-        cookie_jar = self._serialize_cookies(response.cookies.jar)
-        cookie_header = self._cookie_header(cookie_jar)
-        if not cookie_header:
-            return AuthResult(False, "登录失败：站点未返回有效 Cookie")
+        这里不能只读取登录响应的 `response.cookies`，因为站点可能把 Cookie 写入
+        AsyncClient 的 cookie jar，且后续 profile 校验必须沿用同一个会话。
+        因此登录阶段使用独立临时 client：POST 登录 -> 同 client GET profile -> 序列化 client.cookies.jar。
+        """
+        headers = {
+            "User-Agent": self.client.user_agent,
+            "Accept": "*/*",
+            "X-Requested-With": "XMLHttpRequest",
+            "Origin": "https://www.esjzone.one",
+            "Referer": "https://www.esjzone.one/login",
+        }
+        client_kwargs: dict[str, Any] = {
+            "headers": {"User-Agent": self.client.user_agent, "Accept": "*/*"},
+            "follow_redirects": False,
+            "timeout": httpx.Timeout(self.client.timeout),
+        }
+        if self.client.proxy:
+            client_kwargs["proxy"] = self.client.proxy
 
-        validation = await self.validate_cookie(cookie_header)
-        if not validation.valid:
-            return AuthResult(False, validation.message or "登录失败：Cookie 校验未通过")
+        async with httpx.AsyncClient(**client_kwargs) as login_client:
+            response = await login_client.post(
+                LOGIN_URL,
+                data={"email": email, "pwd": password, "remember_me": "on"},
+                headers=headers,
+            )
+            response.raise_for_status()
 
-        return AuthResult(
-            success=True,
-            message="登录成功",
-            cookie=cookie_header,
-            cookie_jar=cookie_jar,
-            username=validation.username,
-        )
+            validation = await self.validate_client_cookie(login_client)
+            if not validation.valid:
+                return AuthResult(False, validation.message or "登录失败：Cookie 校验未通过")
+
+            cookie_jar = self._serialize_cookies(login_client.cookies.jar)
+            cookie_header = self._cookie_header(cookie_jar)
+            if not cookie_header:
+                return AuthResult(False, "登录失败：站点未返回有效 Cookie")
+
+            return AuthResult(
+                success=True,
+                message="登录成功",
+                cookie=cookie_header,
+                cookie_jar=cookie_jar,
+                username=validation.username,
+            )
 
     async def save_login(self, event: Any, email: str, password: str, result: AuthResult) -> None:
         user_hash, platform_id, _ = self.get_user_hash(event)
@@ -109,26 +128,31 @@ class EsjAuthService:
 
     async def validate_cookie(self, cookie: str) -> CookieValidationResult:
         try:
-            html = await self.client.fetch_text(
-                PROFILE_URL,
-                auth=AuthContext(user_hash="", platform_id="", sender_id="", cookie=cookie),
-                retries=0,
-            )
+            headers = {
+                "User-Agent": self.client.user_agent,
+                "Accept": "*/*",
+                "Cookie": cookie,
+            }
+            client_kwargs: dict[str, Any] = {
+                "headers": headers,
+                "follow_redirects": False,
+                "timeout": httpx.Timeout(self.client.timeout),
+            }
+            if self.client.proxy:
+                client_kwargs["proxy"] = self.client.proxy
+            async with httpx.AsyncClient(**client_kwargs) as validate_client:
+                html = await self._fetch_profile_html(validate_client)
         except Exception as exc:
             return CookieValidationResult(False, unknown=True, message=f"网络错误：{type(exc).__name__}")
 
-        if "window.location.href='/my/login';" in html or 'window.location.href="/my/login";' in html:
-            return CookieValidationResult(False, message="Cookie 已失效")
-
-        soup = BeautifulSoup(html, "lxml")
-        username_node = soup.select_one("h6.user-name")
-        if username_node:
-            return CookieValidationResult(True, username=username_node.get_text(" ", strip=True), message="Cookie 有效")
-
-        return CookieValidationResult(False, unknown=True, message="无法识别登录状态")
+        return self._parse_profile_validation(html)
 
     async def validate_client_cookie(self, client: Any) -> CookieValidationResult:
-        return await self.validate_cookie(str(client.cookies))
+        try:
+            html = await self._fetch_profile_html(client)
+        except Exception as exc:
+            return CookieValidationResult(False, unknown=True, message=f"网络错误：{type(exc).__name__}")
+        return self._parse_profile_validation(html)
 
     async def refresh_cookie(self, user_hash: str) -> AuthResult:
         record = self._load_user_record(user_hash)
@@ -230,6 +254,31 @@ class EsjAuthService:
             count += 1
         return count
 
+    async def _fetch_profile_html(self, client: httpx.AsyncClient) -> str:
+        response = await client.get(PROFILE_URL)
+        if response.is_redirect:
+            location = response.headers.get("location", "")
+            if "/my/login" in location or "/login" in location:
+                return "window.location.href='/my/login';"
+        response.raise_for_status()
+        return response.text
+
+    def _parse_profile_validation(self, html: str) -> CookieValidationResult:
+        if "window.location.href='/my/login';" in html or 'window.location.href="/my/login";' in html:
+            return CookieValidationResult(False, message="Cookie 已失效")
+
+        soup = BeautifulSoup(html, "lxml")
+        username_node = soup.select_one("h6.user-name")
+        if username_node:
+            return CookieValidationResult(True, username=username_node.get_text(" ", strip=True), message="Cookie 有效")
+
+        # 兼容站点轻微结构变化：profile 页没有跳登录，且包含用户资料区域时，不要直接判定失效。
+        profile_markers = ("/my/logout", "會員", "会员", "profile", "user-name")
+        if any(marker in html for marker in profile_markers):
+            return CookieValidationResult(True, username=None, message="Cookie 有效")
+
+        return CookieValidationResult(False, unknown=True, message="无法识别登录状态")
+
     def _load_user_record(self, user_hash: str) -> dict[str, Any] | None:
         path = self._user_file(user_hash)
         if not path.exists():
@@ -239,7 +288,7 @@ class EsjAuthService:
     def _serialize_cookies(self, jar: Any) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         for cookie in jar:
-            domain = getattr(cookie, "domain", "")
+            domain = getattr(cookie, "domain", "") or "www.esjzone.one"
             name = getattr(cookie, "name", "")
             value = getattr(cookie, "value", "")
             path = getattr(cookie, "path", "/") or "/"
