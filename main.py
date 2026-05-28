@@ -6,6 +6,7 @@ from typing import Any
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
+import astrbot.api.message_components as Comp
 from astrbot.api.star import Context, Star, register
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
@@ -256,14 +257,27 @@ class EsjZoneDownloaderPlugin(Star):
         try:
             yield event.plain_result(f"任务开始：正在下载并导出 {fmt.upper()}。")
             result = await self.downloader.download(auth, url, fmt, start, end)
+            package_path = Path(result.package_path)
             yield event.plain_result(
                 f"下载完成：{result.title}\n"
                 f"格式：{result.format}\n"
                 f"章节数：{result.chapter_count}\n"
-                f"ZIP：{result.package_path}\n"
                 f"ZIP 密码：{result.password}\n"
-                f"WebUI：{self._webui_url()}"
+                "正在发送 ZIP 文件。"
             )
+
+            try:
+                yield event.chain_result([
+                    Comp.File(file=str(package_path), name=package_path.name)
+                ])
+            except Exception as send_exc:
+                logger.exception("ZIP 文件发送失败")
+                yield event.plain_result(
+                    f"ZIP 文件发送失败：{send_exc}\n"
+                    f"ZIP：{result.package_path}\n"
+                    f"ZIP 密码：{result.password}\n"
+                    f"WebUI：{self._webui_url()}"
+                )
         except Exception as exc:
             logger.exception("下载失败")
             yield event.plain_result(f"下载失败：{exc}")
