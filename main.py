@@ -22,7 +22,7 @@ PLUGIN_NAME = "astrbot_plugin_esjzone_downloader"
     PLUGIN_NAME,
     "Rentz",
     "ESJZone 小说下载器，支持登录、EPUB/TXT 导出、ZIP 打包和 Dashboard 管理。",
-    "0.1.0",
+    "0.2.0",
 )
 class EsjZoneDownloaderPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -52,6 +52,12 @@ class EsjZoneDownloaderPlugin(Star):
         self.config.setdefault("download", {})
         self.config["download"].setdefault("allow_external_images", True)
 
+        self.config.setdefault("message", {})
+        msg = self.config["message"]
+        msg.setdefault("private_verbose_status", True)
+        msg.setdefault("group_verbose_status", False)
+        msg.setdefault("group_mention_user", True)
+
         self.config.setdefault("debug", {})
         dbg = self.config["debug"]
         dbg.setdefault("enabled", False)
@@ -75,6 +81,47 @@ class EsjZoneDownloaderPlugin(Star):
         port = int(dash.get("port") or 8989)
         display_host = "127.0.0.1" if host == "0.0.0.0" else host
         return f"http://{display_host}:{port}/"
+
+    def _message_cfg(self) -> dict[str, Any]:
+        cfg = self.config.get("message", {}) if hasattr(self.config, "get") else {}
+        return cfg if isinstance(cfg, dict) else {}
+
+    def _is_verbose_reply(self, event: AstrMessageEvent) -> bool:
+        cfg = self._message_cfg()
+        if self._is_group_event(event):
+            return bool(cfg.get("group_verbose_status", False))
+        return bool(cfg.get("private_verbose_status", True))
+
+    def _should_mention(self, event: AstrMessageEvent) -> bool:
+        return self._is_group_event(event) and bool(self._message_cfg().get("group_mention_user", True))
+
+    def _reply(self, event: AstrMessageEvent, text: str):
+        if self._should_mention(event):
+            try:
+                return event.chain_result([
+                    Comp.At(qq=event.get_sender_id()),
+                    Comp.Plain(" "),
+                    Comp.Plain(text),
+                ])
+            except Exception:
+                return event.plain_result(text)
+        return event.plain_result(text)
+
+    def _download_start_text(self, event: AstrMessageEvent, fmt: str) -> str:
+        if self._is_verbose_reply(event):
+            return f"任务开始：正在下载并导出 {fmt.upper()}。"
+        return "正在开始任务"
+
+    def _download_done_text(self, event: AstrMessageEvent, result) -> str:
+        if self._is_verbose_reply(event):
+            return (
+                f"下载完成：{result.title}\n"
+                f"格式：{result.format}\n"
+                f"章节数：{result.chapter_count}\n"
+                f"ZIP 密码：{result.password}\n"
+                "正在发送 ZIP 文件。"
+            )
+        return f"下载完成，正在发送文件。ZIP 密码：{result.password}"
 
     def _register_web_apis(self) -> None:
         try:
@@ -204,16 +251,25 @@ class EsjZoneDownloaderPlugin(Star):
             return
 
         latest = chapters[-1].title if chapters else "无"
-        yield event.plain_result(
-            f"《{metadata.title}》\n"
-            f"ID：{metadata.book_id}\n"
-            f"作者：{metadata.author}\n"
-            f"章节数：{len(chapters)}\n"
-            f"最新章节：{latest}\n"
-            f"详情页：{metadata.detail_url}\n\n"
-            f"简介：{metadata.intro_text[:300] or '无'}\n\n"
-            f"下载：/esj d {metadata.book_id} epub"
-        )
+        if self._is_verbose_reply(event):
+            text = (
+                f"《{metadata.title}》\n"
+                f"ID：{metadata.book_id}\n"
+                f"作者：{metadata.author}\n"
+                f"章节数：{len(chapters)}\n"
+                f"最新章节：{latest}\n"
+                f"详情页：{metadata.detail_url}\n\n"
+                f"简介：{metadata.intro_text[:300] or '无'}\n\n"
+                f"下载：/esj d {metadata.book_id} epub"
+            )
+        else:
+            text = (
+                f"《{metadata.title}》\n"
+                f"章节数：{len(chapters)}\n"
+                f"最新：{latest}\n"
+                f"下载：/esj d {metadata.book_id} epub"
+            )
+        yield self._reply(event, text)
 
     @esj.command("check", alias={"c"})
     async def esj_check(self, event: AstrMessageEvent, url: str):
@@ -233,12 +289,23 @@ class EsjZoneDownloaderPlugin(Star):
         n = int(self.config.get("download", {}).get("recent_chapter_count", 8))
         recent = chapters[-n:]
         start_no = max(len(chapters) - len(recent) + 1, 1)
-        lines = [f"《{metadata.title}》最近更新：", f"总章节数：{len(chapters)}", ""]
-        for offset, chapter in enumerate(recent):
-            lines.append(f"{start_no + offset}. {chapter.title}")
-        if recent:
-            lines += ["", "下载最新章节：", f"/esj d {metadata.book_id} epub {start_no} {len(chapters)}"]
-        yield event.plain_result("\n".join(lines))
+        if self._is_verbose_reply(event):
+            lines = [f"《{metadata.title}》最近更新：", f"总章节数：{len(chapters)}", ""]
+            for offset, chapter in enumerate(recent):
+                lines.append(f"{start_no + offset}. {chapter.title}")
+            if recent:
+                lines += ["", "下载最新章节：", f"/esj d {metadata.book_id} epub {start_no} {len(chapters)}"]
+            text = "\n".join(lines)
+        else:
+            latest = chapters[-1].title if chapters else "无"
+            text = (
+                f"《{metadata.title}》\n"
+                f"总章节数：{len(chapters)}\n"
+                f"最新：{latest}"
+            )
+            if recent:
+                text += f"\n下载最新章节：/esj d {metadata.book_id} epub {start_no} {len(chapters)}"
+        yield self._reply(event, text)
 
     @esj.command("download", alias={"d"})
     async def esj_download(self, event: AstrMessageEvent, url: str, fmt: str = "", start: int = 0, end: int = 0):
@@ -255,16 +322,10 @@ class EsjZoneDownloaderPlugin(Star):
             return
 
         try:
-            yield event.plain_result(f"任务开始：正在下载并导出 {fmt.upper()}。")
+            yield self._reply(event, self._download_start_text(event, fmt))
             result = await self.downloader.download(auth, url, fmt, start, end)
             package_path = Path(result.package_path)
-            yield event.plain_result(
-                f"下载完成：{result.title}\n"
-                f"格式：{result.format}\n"
-                f"章节数：{result.chapter_count}\n"
-                f"ZIP 密码：{result.password}\n"
-                "正在发送 ZIP 文件。"
-            )
+            yield self._reply(event, self._download_done_text(event, result))
 
             try:
                 yield event.chain_result([
@@ -272,12 +333,16 @@ class EsjZoneDownloaderPlugin(Star):
                 ])
             except Exception as send_exc:
                 logger.exception("ZIP 文件发送失败")
-                yield event.plain_result(
-                    f"ZIP 文件发送失败：{send_exc}\n"
-                    f"ZIP：{result.package_path}\n"
-                    f"ZIP 密码：{result.password}\n"
-                    f"WebUI：{self._webui_url()}"
-                )
+                if self._is_verbose_reply(event):
+                    text = (
+                        f"ZIP 文件发送失败：{send_exc}\n"
+                        f"ZIP：{result.package_path}\n"
+                        f"ZIP 密码：{result.password}\n"
+                        f"WebUI：{self._webui_url()}"
+                    )
+                else:
+                    text = "文件发送失败，请私聊机器人或联系管理员查看。"
+                yield self._reply(event, text)
         except Exception as exc:
             logger.exception("下载失败")
             yield event.plain_result(f"下载失败：{exc}")

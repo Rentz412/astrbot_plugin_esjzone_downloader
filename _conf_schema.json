@@ -82,17 +82,17 @@
     "type": "object",
     "items": {
       "private_verbose_status": {
-        "description": "私聊输出详细下载状态",
+        "description": "私聊使用详细回复",
         "type": "bool",
         "default": true
       },
       "group_mention_user": {
-        "description": "群聊简短提示时 @ 发起用户",
+        "description": "群聊回复时 @ 发起用户",
         "type": "bool",
         "default": true
       },
       "group_verbose_status": {
-        "description": "群聊输出详细下载状态（不推荐）",
+        "description": "群聊使用详细回复（不推荐，可能刷屏）",
         "type": "bool",
         "default": false
       }

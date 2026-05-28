@@ -4,7 +4,7 @@ desc: 下载 ESJZone 小说并导出 EPUB/TXT，支持自动登录、用户 Cook
 short_desc: ESJZone 小说 EPUB/TXT 下载器。
 version: v0.2.0
 author: Rentz
-repo: https://github.com/your-name/astrbot_plugin_esjzone_downloader
+repo: https://github.com/Rentz412/astrbot_plugin_esjzone_downloader
 astrbot_version: ">=4.16"
 support_platforms:
   - aiocqhttp
