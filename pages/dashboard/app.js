@@ -1,70 +1,62 @@
-const bridge = window.AstrBotPluginPage;
-const tokenInput = document.getElementById("token");
-const saveTokenButton = document.getElementById("save-token");
-const refreshButton = document.getElementById("refresh");
-const statusBox = document.getElementById("status");
-const booksBox = document.getElementById("books");
+const state = {
+  token: localStorage.getItem("esjzone_dashboard_token") || "",
+};
 
-await bridge.ready();
-
-const savedToken = localStorage.getItem("esjzone_dashboard_token") || "";
-tokenInput.value = savedToken;
-
-function setStatus(message) {
-  statusBox.textContent = message;
+function el(id) {
+  return document.getElementById(id);
 }
 
-function tokenParams() {
-  const token = tokenInput.value.trim();
-  return token ? { token } : {};
+function renderStatus(text, error = false) {
+  const node = el("status");
+  node.textContent = text;
+  node.className = error ? "status error" : "status";
 }
 
-saveTokenButton.addEventListener("click", () => {
-  localStorage.setItem("esjzone_dashboard_token", tokenInput.value.trim());
-  setStatus("Token 已保存到当前浏览器。");
-});
-
-refreshButton.addEventListener("click", () => {
-  loadBooks();
-});
+function renderBooks(books) {
+  const root = el("books");
+  if (!books.length) {
+    root.innerHTML = "<p>暂无本地书籍。</p>";
+    return;
+  }
+  root.innerHTML = books.map((book) => `
+    <article class="book-card">
+      <h2>${book.title || book.book_id}</h2>
+      <p>作者：${book.author || "未知"}</p>
+      <p>ID：${book.book_id}</p>
+      <p>章节数：${book.chapter_count || 0}</p>
+      <p>最新章节：${book.latest_chapter_title || ""}</p>
+      <p>格式：${(book.downloaded_formats || []).join(", ")}</p>
+      <p>ZIP：${book.package_path || ""}</p>
+    </article>
+  `).join("");
+}
 
 async function loadBooks() {
-  booksBox.innerHTML = "";
-  setStatus("正在加载...");
   try {
-    const data = await bridge.apiGet("books", tokenParams());
-    const books = data.books || [];
-    if (!books.length) {
-      booksBox.innerHTML = "<p>暂无本地书籍。</p>";
-    } else {
-      for (const book of books) {
-        const card = document.createElement("article");
-        card.className = "book-card";
-
-        const title = document.createElement("h3");
-        title.textContent = book.title || book.book_id || "未命名书籍";
-        card.appendChild(title);
-
-        card.appendChild(makeLine("编号", book.book_id || ""));
-        card.appendChild(makeLine("作者", book.author || "未知"));
-        card.appendChild(makeLine("章节数", book.chapter_count || 0));
-        card.appendChild(makeLine("最新章节", book.latest_chapter_title || ""));
-        card.appendChild(makeLine("格式", (book.downloaded_formats || []).join(", ")));
-        card.appendChild(makeLine("包路径", book.package_path || ""));
-
-        booksBox.appendChild(card);
-      }
+    const bridge = window.AstrBotPluginPage;
+    await bridge.ready();
+    const result = await bridge.apiGet("books", {
+      headers: { "X-ESJ-Token": state.token },
+    });
+    if (!result.ok) {
+      renderStatus(result.error || "加载失败", true);
+      renderBooks([]);
+      return;
     }
-    setStatus("加载完成。");
-  } catch (error) {
-    setStatus(`加载失败：${error.message || error}`);
+    renderStatus("加载完成");
+    renderBooks(result.books || []);
+  } catch (err) {
+    renderStatus(`加载失败：${err.message}`, true);
   }
 }
 
-function makeLine(label, value) {
-  const p = document.createElement("p");
-  p.textContent = `${label}：${value}`;
-  return p;
-}
-
-loadBooks();
+window.addEventListener("DOMContentLoaded", () => {
+  el("token").value = state.token;
+  el("saveToken").addEventListener("click", () => {
+    state.token = el("token").value.trim();
+    localStorage.setItem("esjzone_dashboard_token", state.token);
+    renderStatus("Token 已保存");
+  });
+  el("refresh").addEventListener("click", loadBooks);
+  loadBooks();
+});

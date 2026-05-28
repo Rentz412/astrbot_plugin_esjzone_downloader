@@ -21,6 +21,12 @@
         "type": "bool",
         "default": true
       },
+      "allow_external_images": {
+        "description": "允许下载外站图床图片",
+        "type": "bool",
+        "default": true,
+        "hint": "ESJZone 的封面和插图经常托管在外部图床。开启后仅对图片下载放宽域名限制，页面和章节请求仍限制 ESJZone 域名。"
+      },
       "request_timeout": {
         "description": "页面请求超时时间（秒）",
         "type": "int",
@@ -97,28 +103,56 @@
     "type": "object",
     "items": {
       "enabled": {
-        "description": "启用调试模式",
+        "description": "启用 ESJZone 插件调试日志",
         "type": "bool",
         "default": false,
-        "hint": "开启后会输出更详细日志，并可保存登录/校验响应样本。调试文件可能包含敏感登录态信息，排查完成后请关闭。"
+        "hint": "开启后输出 [esj.debug] 前缀日志，并按配置保存页面/诊断 JSON。"
       },
-      "save_auth_responses": {
-        "description": "保存认证调试响应",
+      "save_pages": {
+        "description": "保存详情页和诊断 JSON",
         "type": "bool",
-        "default": true,
-        "hint": "启用调试模式时，将登录页、token 响应、登录响应、profile 校验页保存到插件数据目录 debug/auth/。"
+        "default": true
+      },
+      "save_auth_pages": {
+        "description": "保存登录与个人资料页调试文件",
+        "type": "bool",
+        "default": true
+      },
+      "save_chapter_pages": {
+        "description": "保存章节页 HTML",
+        "type": "bool",
+        "default": false,
+        "hint": "章节很多时会产生大量文件，建议仅排查章节正文问题时开启。"
       }
     }
   },
   "dashboard": {
-    "description": "Dashboard 配置",
+    "description": "Dashboard / WebUI 配置",
     "type": "object",
     "items": {
       "enabled": {
         "description": "启用 Dashboard / WebUI",
         "type": "bool",
         "default": false,
-        "hint": "默认关闭以减少资源占用。开启后可在插件 Pages 中查看本地书库、日志和下载文件；公网环境必须启用 Token 验证。"
+        "hint": "默认关闭以减少资源占用。开启后通过配置的 host:port 访问 WebUI；公网环境必须启用 Token 验证。"
+      },
+      "host": {
+        "description": "WebUI 监听地址",
+        "type": "string",
+        "default": "127.0.0.1",
+        "hint": "仅本机访问使用 127.0.0.1；需要局域网访问可设置为 0.0.0.0，并务必启用 Token。"
+      },
+      "port": {
+        "description": "WebUI 访问端口",
+        "type": "int",
+        "default": 8989,
+        "hint": "WebUI 必须通过带端口地址访问，例如 http://127.0.0.1:8989/。"
+      },
+      "public_base_url": {
+        "description": "WebUI 对外访问基础地址",
+        "type": "string",
+        "default": "",
+        "hint": "可选。反向代理或公网部署时填写，例如 https://example.com:8443；为空时按 host 和 port 生成访问提示。"
       },
       "auth_enabled": {
         "description": "启用 Dashboard Token 验证",

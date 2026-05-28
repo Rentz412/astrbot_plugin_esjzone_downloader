@@ -1,32 +1,23 @@
 <!doctype html>
 <html lang="zh-CN">
-  <head>
-    <meta charset="utf-8" />
-    <title>ESJZone 下载器 Dashboard</title>
-    <link rel="stylesheet" href="./style.css" />
-  </head>
-  <body>
-    <main class="container">
-      <header>
-        <h1>ESJZone 下载器 Dashboard</h1>
-        <p>查看本地书库、日志和已生成文件。Dashboard 默认关闭，需要管理员执行 <code>/esj db on</code>。</p>
-      </header>
-
-      <section class="panel">
-        <label>
-          Dashboard Token
-          <input id="token" type="password" placeholder="请输入 dashboard token" />
-        </label>
-        <button id="save-token">保存 Token</button>
-        <button id="refresh">刷新书库</button>
-        <pre id="status"></pre>
-      </section>
-
-      <section class="panel">
-        <h2>本地书库</h2>
-        <div id="books" class="books"></div>
-      </section>
-    </main>
-    <script type="module" src="./app.js"></script>
-  </body>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ESJZone 下载器 Dashboard</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <main>
+    <h1>ESJZone 下载器 Dashboard</h1>
+    <section class="token-panel">
+      <label>Dashboard Token</label>
+      <input id="token" type="password" placeholder="输入配置中的 dashboard.token" />
+      <button id="saveToken">保存 Token</button>
+      <button id="refresh">刷新书库</button>
+    </section>
+    <section id="status" class="status">正在初始化...</section>
+    <section id="books" class="books"></section>
+  </main>
+  <script src="./app.js"></script>
+</body>
 </html>

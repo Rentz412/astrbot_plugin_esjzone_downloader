@@ -2,15 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .models import BookMetadata, ChapterData
+from .models import BookMetadata
 
 
 class TxtExporter:
-    async def export(self, metadata: BookMetadata, chapters: list[ChapterData], output_path: Path) -> Path:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        ordered = sorted(chapters, key=lambda item: item.index)
-
-        lines: list[str] = [
+    def export(self, book_dir: Path, metadata: BookMetadata, chapters: list[dict]) -> Path:
+        output = book_dir / "outputs" / f"{metadata.safe_title}.txt"
+        lines = [
             metadata.title,
             f"作者：{metadata.author}",
             f"来源：{metadata.detail_url}",
@@ -20,15 +18,11 @@ class TxtExporter:
             "",
             "目录：",
         ]
-
-        for chapter in ordered:
-            lines.append(f"{chapter.index + 1}. {chapter.title}")
-
+        for idx, chapter in enumerate(chapters, start=1):
+            lines.append(f"{idx}. {chapter.get('title', '')}")
         lines.append("\n正文：\n")
-
-        for chapter in ordered:
-            lines.append("=" * 40)
-            lines.append(chapter.txt_segment)
-
-        output_path.write_text("\n".join(lines), encoding="utf-8")
-        return output_path
+        for idx, chapter in enumerate(chapters, start=1):
+            lines.append(f"\n\n## {idx}. {chapter.get('title', '')}\n")
+            lines.append(chapter.get("text", ""))
+        output.write_text("\n".join(lines), encoding="utf-8")
+        return output

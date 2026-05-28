@@ -1,155 +1,130 @@
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Mapping
+from urllib.parse import urlparse
 
 import httpx
 
 from .models import AuthContext
-from .utils import validate_esj_url
+
+ALLOWED_ESJ_HOSTS = {"www.esjzone.one", "www.esjzone.cc"}
 
 
 class EsjHttpClient:
-    def __init__(
-        self,
-        user_agent: str,
-        timeout: int = 15,
-        image_timeout: int = 8,
-        max_retries: int = 3,
-        proxy: str | None = None,
-    ) -> None:
-        self.user_agent = user_agent
-        self.timeout = timeout
-        self.image_timeout = image_timeout
-        self.max_retries = max_retries
-        self.proxy = proxy or None
-        self._client: httpx.AsyncClient | None = None
+    def __init__(self, config: Mapping):
+        download = config.get("download", {}) if isinstance(config, Mapping) else {}
+        proxy = config.get("proxy", {}) if isinstance(config, Mapping) else {}
+        self.user_agent = download.get("user_agent") or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125 Safari/537.36"
+        self.timeout = float(download.get("request_timeout") or 15)
+        self.proxy_url = proxy.get("url") if proxy.get("enabled") else None
+        self.last_response_info: dict[str, object] = {}
 
-    async def get_client(self) -> httpx.AsyncClient:
-        if self._client is None or self._client.is_closed:
-            kwargs = {
-                "headers": {"User-Agent": self.user_agent},
-                "follow_redirects": False,
-                "timeout": httpx.Timeout(self.timeout),
-            }
-            if self.proxy:
-                kwargs["proxy"] = self.proxy
-            self._client = httpx.AsyncClient(**kwargs)
-        return self._client
+    def build_headers(self, referer: str = "https://www.esjzone.one/") -> dict[str, str]:
+        return {
+            "User-Agent": self.user_agent,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9",
+            "Origin": "https://www.esjzone.one",
+            "Referer": referer,
+        }
 
-    async def close(self) -> None:
-        if self._client and not self._client.is_closed:
-            await self._client.aclose()
+    def _build_cookies(self, auth: AuthContext | None) -> httpx.Cookies | None:
+        if not auth:
+            return None
+        cookies = httpx.Cookies()
+        if auth.cookie_jar:
+            for row in auth.cookie_jar:
+                name = str((row or {}).get("name", "")).strip()
+                value = str((row or {}).get("value", "")).strip()
+                if not name or not value:
+                    continue
+                domain = str((row or {}).get("domain", "")).strip() or ".esjzone.one"
+                path = str((row or {}).get("path", "")).strip() or "/"
+                cookies.set(name, value, domain=domain, path=path)
+        elif auth.cookie:
+            for part in auth.cookie.split(";"):
+                name, sep, value = part.strip().partition("=")
+                if sep and name and value:
+                    cookies.set(name.strip(), value.strip(), domain=".esjzone.one", path="/")
+        return cookies if len(cookies) > 0 else None
 
-    def _headers(self, auth: AuthContext | None = None, extra: Mapping[str, str] | None = None) -> dict[str, str]:
-        headers = {"User-Agent": self.user_agent}
+    def build_client(self, auth: AuthContext | None = None) -> httpx.AsyncClient:
+        headers = self.build_headers()
         if auth and auth.cookie:
+            # 双保险：
+            # 1. CookieJar 负责按 domain/path 模拟浏览器行为；
+            # 2. 显式 Cookie Header 避免 httpx 因历史 cookie domain/path 不完全匹配而漏发。
             headers["Cookie"] = auth.cookie
-        if extra:
-            headers.update(extra)
-        return headers
+        kwargs = {
+            "headers": headers,
+            "timeout": self.timeout,
+            "follow_redirects": True,
+        }
+        cookies = self._build_cookies(auth)
+        if cookies is not None:
+            kwargs["cookies"] = cookies
+        if self.proxy_url:
+            kwargs["proxy"] = self.proxy_url
+        return httpx.AsyncClient(**kwargs)
 
-    async def fetch_text(
-        self,
-        url: str,
-        auth: AuthContext | None = None,
-        *,
-        referer: str | None = None,
-        retries: int | None = None,
-    ) -> str:
-        validate_esj_url(url)
-        headers = {}
-        if referer:
-            headers["Referer"] = referer
-        response = await self._request_with_retries(
-            "GET",
-            url,
-            auth=auth,
-            headers=headers,
-            retries=retries,
-        )
+    @staticmethod
+    def validate_esj_url(url: str) -> None:
+        parsed = urlparse(url)
+        if parsed.scheme != "https":
+            raise ValueError("只允许 HTTPS")
+        if parsed.hostname not in ALLOWED_ESJ_HOSTS:
+            raise ValueError("非 ESJZone 白名单域名")
+        if parsed.username or parsed.password:
+            raise ValueError("URL 不允许包含用户名或密码")
+
+    async def get_text(self, client: httpx.AsyncClient, url: str, referer: str = "https://www.esjzone.one/") -> str:
+        self.validate_esj_url(url)
+        response = await client.get(url, headers=self.build_headers(referer))
+        response.raise_for_status()
+        self.validate_esj_url(str(response.url))
+        self.last_response_info = {
+            "request_url": url,
+            "final_url": str(response.url),
+            "status_code": response.status_code,
+            "content_type": response.headers.get("content-type", ""),
+            "text_length": len(response.text),
+            "request_cookie_header_present": bool(client.headers.get("Cookie")),
+            "request_cookie_header_length": len(client.headers.get("Cookie", "")),
+        }
         return response.text
 
-    async def fetch_bytes(
+    async def get_bytes(
         self,
+        client: httpx.AsyncClient,
         url: str,
-        auth: AuthContext | None = None,
-        *,
-        referer: str | None = None,
-        retries: int | None = None,
+        referer: str = "https://www.esjzone.one/",
+        allow_external: bool = False,
     ) -> tuple[bytes, str]:
-        validate_esj_url(url)
-        headers = {}
-        if referer:
-            headers["Referer"] = referer
-        response = await self._request_with_retries(
-            "GET",
-            url,
-            auth=auth,
-            headers=headers,
-            retries=retries,
-            timeout=self.image_timeout,
-        )
-        return response.content, response.headers.get("content-type", "")
-
-    async def post_form(
-        self,
-        url: str,
-        data: Mapping[str, str],
-        *,
-        headers: Mapping[str, str] | None = None,
-        retries: int | None = None,
-    ) -> httpx.Response:
-        validate_esj_url(url)
-        return await self._request_with_retries(
-            "POST",
-            url,
-            data=data,
-            headers=headers,
-            retries=retries,
-        )
-
-    async def _request_with_retries(
-        self,
-        method: str,
-        url: str,
-        *,
-        auth: AuthContext | None = None,
-        headers: Mapping[str, str] | None = None,
-        data: Mapping[str, str] | None = None,
-        retries: int | None = None,
-        timeout: int | None = None,
-    ) -> httpx.Response:
-        attempts = self.max_retries if retries is None else retries
-        client = await self.get_client()
-        last_error: Exception | None = None
-
-        for attempt in range(attempts + 1):
-            try:
-                response = await client.request(
-                    method,
-                    url,
-                    data=data,
-                    headers=self._headers(auth, headers),
-                    timeout=timeout or self.timeout,
-                )
-                if 300 <= response.status_code < 400 and response.headers.get("location"):
-                    location = str(response.headers["location"])
-                    redirect_url = str(httpx.URL(url).join(location))
-                    validate_esj_url(redirect_url)
-                    response = await client.request(
-                        method,
-                        redirect_url,
-                        data=data,
-                        headers=self._headers(auth, headers),
-                        timeout=timeout or self.timeout,
-                    )
-                response.raise_for_status()
-                return response
-            except (httpx.HTTPError, ValueError) as exc:
-                last_error = exc
-                if attempt >= attempts:
-                    break
-                await asyncio.sleep(0.5 * (attempt + 1))
-
-        raise RuntimeError(f"请求失败：{url}") from last_error
+        if allow_external:
+            parsed = urlparse(url)
+            if parsed.scheme not in {"https", "http"} or parsed.username or parsed.password:
+                raise ValueError("图片 URL 非法")
+        else:
+            self.validate_esj_url(url)
+        headers = self.build_headers(referer)
+        headers["Accept"] = "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+        response = await client.get(url, headers=headers)
+        response.raise_for_status()
+        if allow_external:
+            parsed_final = urlparse(str(response.url))
+            if parsed_final.scheme not in {"https", "http"} or parsed_final.username or parsed_final.password:
+                raise ValueError("图片最终 URL 非法")
+        else:
+            self.validate_esj_url(str(response.url))
+        content = response.content
+        content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        self.last_response_info = {
+            "request_url": url,
+            "final_url": str(response.url),
+            "status_code": response.status_code,
+            "content_type": content_type,
+            "bytes_length": len(content),
+            "request_cookie_header_present": bool(client.headers.get("Cookie")),
+            "request_cookie_header_length": len(client.headers.get("Cookie", "")),
+        }
+        return content, content_type

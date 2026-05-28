@@ -1,22 +1,67 @@
 from __future__ import annotations
 
+from html import escape
 from pathlib import Path
 
 from bs4 import BeautifulSoup
 from ebooklib import epub
 
-from .models import BookMetadata, ChapterData
+from .models import BookMetadata
 
 
 class EpubExporter:
-    async def export(
+    @staticmethod
+    def _clean_chapter_html(html: str) -> str:
+        if not html:
+            return ""
+        soup = BeautifulSoup(html, "lxml")
+
+        for bad in soup.select("script, style, iframe, object, embed"):
+            bad.decompose()
+
+        root = soup.select_one(".forum-content") or soup.body or soup
+        content = root.decode_contents() if hasattr(root, "decode_contents") else str(root)
+
+        # EPUB/XHTML 中 img 最好有 alt，避免部分阅读器校验报错。
+        cleaned = BeautifulSoup(content, "lxml")
+        for img in cleaned.select("img"):
+            if not img.get("alt"):
+                img["alt"] = "illustration"
+            # 避免外链 srcset 干扰 EPUB 阅读器。
+            for attr in ("srcset", "data-src", "data-original", "data-lazy-src"):
+                if img.has_attr(attr):
+                    del img[attr]
+
+        body = cleaned.body
+        return body.decode_contents() if body else str(cleaned)
+
+    @staticmethod
+    def _media_type_from_path(path: Path) -> str:
+        suffix = path.suffix.lower()
+        if suffix in {".jpg", ".jpeg"}:
+            return "image/jpeg"
+        if suffix == ".png":
+            return "image/png"
+        if suffix == ".gif":
+            return "image/gif"
+        if suffix == ".webp":
+            return "image/webp"
+        if suffix == ".svg":
+            return "image/svg+xml"
+        if suffix == ".avif":
+            return "image/avif"
+        return "application/octet-stream"
+
+    def export(
         self,
+        book_dir: Path,
         metadata: BookMetadata,
-        chapters: list[ChapterData],
-        output_path: Path,
+        chapters: list[dict],
         cover_path: Path | None = None,
+        image_items: list[dict] | None = None,
     ) -> Path:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output = book_dir / "outputs" / f"{metadata.safe_title}.epub"
+        output.parent.mkdir(parents=True, exist_ok=True)
 
         book = epub.EpubBook()
         book.set_identifier(f"esjzone-{metadata.book_id}")
@@ -27,18 +72,39 @@ class EpubExporter:
         if cover_path and cover_path.exists():
             book.set_cover(cover_path.name, cover_path.read_bytes())
 
+        for item in image_items or []:
+            path = Path(item.get("path", ""))
+            href = item.get("epub_href", "")
+            if not path.exists() or not href:
+                continue
+            book.add_item(
+                epub.EpubImage(
+                    uid=f"img_{len(book.items)}",
+                    file_name=href,
+                    media_type=item.get("media_type") or self._media_type_from_path(path),
+                    content=path.read_bytes(),
+                )
+            )
+
         intro = epub.EpubHtml(title="简介", file_name="intro.xhtml", lang="zh-CN")
-        intro.content = self._wrap_xhtml("简介", f"<h1>{metadata.title}</h1><p>{metadata.intro_text or '无简介'}</p>")
+        intro.content = (
+            f"<h1>{escape(metadata.title)}</h1>"
+            f"<p>作者：{escape(metadata.author)}</p>"
+            f"<p>来源：{escape(metadata.detail_url)}</p>"
+            f"<p>{escape(metadata.intro_text)}</p>"
+        )
         book.add_item(intro)
 
-        epub_chapters: list[epub.EpubHtml] = []
-        for chapter in sorted(chapters, key=lambda item: item.index):
-            item = epub.EpubHtml(
-                title=chapter.title,
-                file_name=f"chapters/chapter_{chapter.index + 1:05d}.xhtml",
-                lang="zh-CN",
-            )
-            item.content = self._wrap_xhtml(chapter.title, self._clean_html(chapter.content_html))
+        epub_chapters = []
+        for idx, chapter in enumerate(chapters, start=1):
+            title = chapter.get("title") or f"第 {idx} 章"
+            html = chapter.get("processed_html") or chapter.get("html") or ""
+            body_html = self._clean_chapter_html(html)
+            if not body_html:
+                body_html = escape(chapter.get("text") or "").replace("\n", "<br/>")
+
+            item = epub.EpubHtml(title=title, file_name=f"chap_{idx:04d}.xhtml", lang="zh-CN")
+            item.content = f"<h2>{escape(title)}</h2>{body_html}"
             book.add_item(item)
             epub_chapters.append(item)
 
@@ -46,29 +112,5 @@ class EpubExporter:
         book.spine = ["nav", intro, *epub_chapters]
         book.add_item(epub.EpubNcx())
         book.add_item(epub.EpubNav())
-
-        epub.write_epub(str(output_path), book)
-        return output_path
-
-    def _clean_html(self, html: str) -> str:
-        soup = BeautifulSoup(html or "", "lxml")
-        body = soup.body or soup
-        for tag in body.find_all(True):
-            allowed_attrs = {}
-            if tag.name == "img" and tag.get("src"):
-                allowed_attrs["src"] = tag["src"]
-                if tag.get("alt"):
-                    allowed_attrs["alt"] = tag["alt"]
-            tag.attrs = allowed_attrs
-        return "".join(str(child) for child in body.children)
-
-    def _wrap_xhtml(self, title: str, body_html: str) -> str:
-        return f"""<?xml version="1.0" encoding="utf-8"?>
-<html xmlns="http://www.w3.org/1999/xhtml" lang="zh-CN">
-<head>
-  <title>{title}</title>
-</head>
-<body>
-{body_html}
-</body>
-</html>"""
+        epub.write_epub(str(output), book)
+        return output

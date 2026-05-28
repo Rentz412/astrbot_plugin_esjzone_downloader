@@ -1,16 +1,24 @@
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass, field
 from enum import Enum
-from pathlib import Path
 from typing import Any, Literal
 
 
 class EsjUrlType(Enum):
     DETAIL = "detail"
-    FORUM_INDEX = "forum_index"
     CHAPTER = "chapter"
+
+
+@dataclass(slots=True)
+class NormalizedEsjUrl:
+    url_type: EsjUrlType
+    book_id: str
+    detail_url: str
+    source_url: str
+    chapter_id: str | None = None
+    chapter_url: str | None = None
+    host: str = "www.esjzone.one"
 
 
 @dataclass(slots=True)
@@ -29,31 +37,35 @@ class BookMetadata:
 @dataclass(slots=True)
 class ChapterTask:
     index: int
+    chapter_id: str
     title: str
     url: str
-    is_external: bool = False
 
 
 @dataclass(slots=True)
-class ImageData:
-    id: str
-    source_url: str
-    file_path: str
-    media_type: str
-    size: int
-
-
-@dataclass(slots=True)
-class ChapterData:
-    index: int
+class ChapterContent:
+    chapter: ChapterTask
     title: str
-    author: str
-    content_html: str
-    content_text: str
-    txt_segment: str
-    images: list[ImageData] = field(default_factory=list)
-    image_errors: int = 0
-    error: str | None = None
+    author: str = ""
+    html: str = ""
+    text: str = ""
+
+
+@dataclass(slots=True)
+class CookieValidationResult:
+    valid: bool
+    username: str | None = None
+    unknown: bool = False
+    reason: str = ""
+
+
+@dataclass(slots=True)
+class AuthResult:
+    success: bool
+    username: str | None = None
+    cookie_header: str = ""
+    cookie_jar: list[dict[str, Any]] = field(default_factory=list)
+    reason: str = ""
 
 
 @dataclass(slots=True)
@@ -70,20 +82,15 @@ class AuthContext:
 
 
 @dataclass(slots=True)
-class AuthResult:
-    success: bool
-    message: str
-    cookie: str = ""
-    cookie_jar: list[dict[str, Any]] = field(default_factory=list)
-    username: str | None = None
-
-
-@dataclass(slots=True)
-class CookieValidationResult:
-    valid: bool
-    unknown: bool = False
-    username: str | None = None
-    message: str = ""
+class DownloadResult:
+    book_id: str
+    title: str
+    output_path: str
+    package_path: str
+    password: str
+    reused: bool = False
+    format: str = "epub"
+    chapter_count: int = 0
 
 
 @dataclass(slots=True)
@@ -92,31 +99,10 @@ class DownloadTaskState:
     book_id: str
     url: str
     format: str
-    total: int = 0
+    total: int
     completed: int = 0
     failed_chapters: int = 0
     failed_images: int = 0
     status: Literal["pending", "running", "cancelled", "failed", "completed"] = "pending"
-    created_at: float = field(default_factory=time.time)
-    updated_at: float = field(default_factory=time.time)
-
-
-@dataclass(slots=True)
-class DownloadResult:
-    book_id: str
-    title: str
-    output_path: Path
-    package_path: Path
-    zip_password: str
-    reused: bool = False
-    format: str = "epub"
-    failed_chapters: int = 0
-    failed_images: int = 0
-
-
-@dataclass(slots=True)
-class DownloadOptions:
-    fmt: Literal["epub", "txt"] = "epub"
-    start: int = 0
-    end: int = 0
-    force: bool = False
+    created_at: float = 0
+    updated_at: float = 0

@@ -1,177 +1,187 @@
 from __future__ import annotations
 
 import re
+from html import unescape
+from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
 
-from .models import BookMetadata, ChapterData, ChapterTask, EsjUrlType
-from .utils import ALLOWED_ESJ_HOSTS, EsjSecurityError, safe_filename, validate_esj_url
+from .models import BookMetadata, ChapterContent, ChapterTask, EsjUrlType, NormalizedEsjUrl
+
+BASE_URL = "https://www.esjzone.one"
+BACKUP_URL = "https://www.esjzone.cc"
+ALLOWED_ESJ_HOSTS = {"www.esjzone.one", "www.esjzone.cc"}
+
+DETAIL_RE = re.compile(r"^/detail/(\d+)(?:\.html)?/?$")
+CHAPTER_RE = re.compile(r"^/forum/(\d+)/(\d+)(?:\.html)?/?$")
+DIGITS_RE = re.compile(r"^\d+$")
 
 
-DETAIL_RE = re.compile(r"^/detail/(\d+)\.html$")
-FORUM_INDEX_RE = re.compile(r"^/forum/(\d+)/?$")
-CHAPTER_RE = re.compile(r"^/forum/(\d+)/([^/]+)\.html$")
+def safe_filename(name: str, max_len: int = 120) -> str:
+    cleaned = re.sub(r'[\\/:*?"<>|\r\n\t]+', "_", name).strip(" ._")
+    cleaned = cleaned or "untitled"
+    reserved = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+    if cleaned.upper() in reserved:
+        cleaned = f"_{cleaned}"
+    return cleaned[:max_len]
 
 
-class EsjParser:
-    def normalize_input(self, raw: str) -> tuple[str, str, EsjUrlType]:
-        value = (raw or "").strip()
-        if not value:
-            raise ValueError("请输入 ESJZone 小说编号或 URL")
+def normalize_esj_input(raw: str) -> NormalizedEsjUrl:
+    value = (raw or "").strip()
+    if not value:
+        raise ValueError("URL 或书籍编号不能为空")
 
-        if value.isdigit():
-            book_id = value
-            url = f"https://www.esjzone.one/detail/{book_id}.html"
-            return book_id, url, EsjUrlType.DETAIL
-
-        validate_esj_url(value)
-        parsed = urlparse(value)
-        if parsed.hostname not in ALLOWED_ESJ_HOSTS:
-            raise EsjSecurityError("URL 域名不在白名单内")
-
-        detail = DETAIL_RE.match(parsed.path)
-        if detail:
-            return detail.group(1), value, EsjUrlType.DETAIL
-
-        forum = FORUM_INDEX_RE.match(parsed.path)
-        if forum:
-            return forum.group(1), value, EsjUrlType.FORUM_INDEX
-
-        chapter = CHAPTER_RE.match(parsed.path)
-        if chapter:
-            return chapter.group(1), value, EsjUrlType.CHAPTER
-
-        raise ValueError("不支持的 ESJZone URL 格式")
-
-    def build_detail_url(self, book_id: str) -> str:
-        return f"https://www.esjzone.one/detail/{book_id}.html"
-
-    def build_forum_url(self, book_id: str) -> str:
-        return f"https://www.esjzone.one/forum/{book_id}"
-
-    def parse_book_metadata(self, html: str, book_id: str, source_url: str) -> BookMetadata:
-        soup = BeautifulSoup(html, "lxml")
-
-        title = ""
-        title_node = soup.select_one(".book-detail h2.text-normal")
-        if title_node:
-            title = title_node.get_text(" ", strip=True)
-        if not title and soup.title:
-            title = soup.title.get_text(" ", strip=True)
-        title = title or f"ESJZone_{book_id}"
-
-        author = "未知作者"
-        detail_items = soup.select(".book-detail ul.book-detail li")
-        info_lines: list[str] = []
-        for item in detail_items:
-            text = item.get_text(" ", strip=True)
-            if text:
-                info_lines.append(text)
-            if "作者" in text or "作家" in text:
-                author = re.sub(r"^(作者|作家)\s*[:：]?\s*", "", text).strip() or author
-
-        intro = ""
-        intro_node = soup.select_one("#details .description")
-        if intro_node:
-            intro = intro_node.get_text("\n", strip=True)
-
-        cover_url = None
-        cover_node = soup.select_one(".product-gallery img[src]")
-        if cover_node and cover_node.get("src"):
-            cover_url = urljoin(source_url, cover_node["src"])
-            try:
-                validate_esj_url(cover_url)
-            except EsjSecurityError:
-                cover_url = None
-
-        return BookMetadata(
+    if DIGITS_RE.fullmatch(value):
+        book_id = value
+        detail_url = f"{BASE_URL}/detail/{book_id}.html"
+        return NormalizedEsjUrl(
+            url_type=EsjUrlType.DETAIL,
             book_id=book_id,
-            title=title,
-            safe_title=safe_filename(title, fallback=f"esj_{book_id}"),
-            author=author,
-            detail_url=self.build_detail_url(book_id),
-            forum_url=self.build_forum_url(book_id),
-            cover_url=cover_url,
-            intro_text=intro,
-            info_block="\n".join(info_lines),
+            detail_url=detail_url,
+            source_url=value,
         )
 
-    def parse_chapter_list(self, html: str, base_url: str) -> list[ChapterTask]:
-        soup = BeautifulSoup(html, "lxml")
-        tasks: list[ChapterTask] = []
-        seen: set[str] = set()
+    if "\\" in value or any(ord(c) < 32 for c in value):
+        raise ValueError("URL 包含非法字符")
 
-        for node in soup.select("#chapterList a[href], a[href]"):
-            href = node.get("href", "").strip()
-            if not href:
-                continue
-            absolute = urljoin(base_url, href)
-            parsed = urlparse(absolute)
-            is_external = parsed.hostname not in ALLOWED_ESJ_HOSTS
-            if not is_external:
-                if not CHAPTER_RE.match(parsed.path):
-                    continue
-                try:
-                    validate_esj_url(absolute)
-                except EsjSecurityError:
-                    continue
-            if absolute in seen:
-                continue
-            seen.add(absolute)
-            title = node.get_text(" ", strip=True) or f"第 {len(tasks) + 1} 章"
-            tasks.append(
-                ChapterTask(
-                    index=len(tasks),
-                    title=title,
-                    url=absolute,
-                    is_external=is_external,
-                )
-            )
+    parsed = urlparse(value)
+    if parsed.scheme != "https":
+        raise ValueError("只允许 https URL")
+    if parsed.hostname not in ALLOWED_ESJ_HOSTS:
+        raise ValueError("只允许 www.esjzone.one 或 www.esjzone.cc")
+    if parsed.username or parsed.password:
+        raise ValueError("URL 不允许包含用户名或密码")
 
-        return tasks
-
-    def parse_chapter_html(self, html: str, task: ChapterTask) -> ChapterData:
-        if task.is_external:
-            text = f"本章为非站内链接，插件未抓取正文：{task.url}"
-            return ChapterData(
-                index=task.index,
-                title=task.title,
-                author="",
-                content_html=f"<p>{text}</p>",
-                content_text=text,
-                txt_segment=f"{task.title}\n\n{text}\n",
-            )
-
-        soup = BeautifulSoup(html, "lxml")
-        title_node = soup.select_one("h2")
-        title = title_node.get_text(" ", strip=True) if title_node else task.title
-
-        author = ""
-        author_node = soup.select_one(".single-post-meta div")
-        if author_node:
-            author = author_node.get_text(" ", strip=True)
-
-        content_node = soup.select_one(".forum-content")
-        if not content_node:
-            raise ValueError(f"章节正文不存在：{task.title}")
-
-        content_html = str(content_node)
-        content_text = content_node.get_text("\n", strip=True)
-
-        if content_text.startswith(title):
-            content_text = content_text[len(title) :].lstrip()
-
-        txt_segment = f"{title}\n"
-        if author:
-            txt_segment += f"作者：{author}\n"
-        txt_segment += f"\n{content_text}\n"
-
-        return ChapterData(
-            index=task.index,
-            title=title or task.title,
-            author=author,
-            content_html=content_html,
-            content_text=content_text,
-            txt_segment=txt_segment,
+    detail_match = DETAIL_RE.fullmatch(parsed.path)
+    if detail_match:
+        book_id = detail_match.group(1)
+        detail_url = f"{BASE_URL}/detail/{book_id}.html"
+        return NormalizedEsjUrl(
+            url_type=EsjUrlType.DETAIL,
+            book_id=book_id,
+            detail_url=detail_url,
+            source_url=value,
+            host="www.esjzone.one",
         )
+
+    chapter_match = CHAPTER_RE.fullmatch(parsed.path)
+    if chapter_match:
+        book_id, chapter_id = chapter_match.groups()
+        detail_url = f"{BASE_URL}/detail/{book_id}.html"
+        chapter_url = f"{BASE_URL}/forum/{book_id}/{chapter_id}.html"
+        return NormalizedEsjUrl(
+            url_type=EsjUrlType.CHAPTER,
+            book_id=book_id,
+            chapter_id=chapter_id,
+            detail_url=detail_url,
+            chapter_url=chapter_url,
+            source_url=value,
+            host="www.esjzone.one",
+        )
+
+    forum_book = re.fullmatch(r"^/forum/(\d+)(?:\.html)?/?$", parsed.path)
+    if forum_book:
+        raise ValueError("/forum/<书籍编号> 不是有效书籍目录页，请使用 /detail/<书籍编号> 或章节页 /forum/<书籍编号>/<章节编号>")
+
+    detail_with_chapter = re.fullmatch(r"^/detail/(\d+)/([^/]+?)(?:\.html)?/?$", parsed.path)
+    if detail_with_chapter:
+        raise ValueError("/detail/<书籍编号>/<章节编号> 不是有效详情页，请使用 /detail/<书籍编号>")
+
+    raise ValueError("不支持的 ESJZone URL 格式")
+
+
+def _text(node) -> str:
+    if not node:
+        return ""
+    return re.sub(r"\s+", " ", node.get_text(" ", strip=True)).strip()
+
+
+def parse_book_detail(html: str, normalized: NormalizedEsjUrl) -> tuple[BookMetadata, list[ChapterTask]]:
+    soup = BeautifulSoup(html, "lxml")
+
+    title = _text(soup.select_one(".book-detail h2.text-normal"))
+    if not title:
+        title = _text(soup.select_one("title")).replace(" - ESJ Zone", "").strip()
+    title = title or f"ESJZone_{normalized.book_id}"
+
+    info_nodes = soup.select(".book-detail ul.book-detail li")
+    info_block = "\n".join(_text(n) for n in info_nodes if _text(n))
+    author = ""
+    for line in info_block.splitlines():
+        if "作者" in line or "作家" in line:
+            author = re.sub(r"^(作者|作家)\s*[:：]?\s*", "", line).strip()
+            break
+    author = author or "未知作者"
+
+    intro = _text(soup.select_one("#details .description")) or _text(soup.select_one(".description"))
+
+    cover_url = None
+    cover = soup.select_one(".product-gallery img[src]")
+    if cover and cover.get("src"):
+        cover_url = normalize_asset_url(cover.get("src"), normalized.detail_url)
+
+    chapters: list[ChapterTask] = []
+    seen: set[str] = set()
+    for link in soup.select("#chapterList a[href], a[href]"):
+        href = link.get("href", "").strip()
+        abs_url = normalize_asset_url(href, normalized.detail_url)
+        parsed = urlparse(abs_url)
+        match = CHAPTER_RE.fullmatch(parsed.path)
+        if not match:
+            continue
+        book_id, chapter_id = match.groups()
+        if book_id != normalized.book_id:
+            continue
+        chapter_url = f"{BASE_URL}/forum/{book_id}/{chapter_id}.html"
+        if chapter_url in seen:
+            continue
+        seen.add(chapter_url)
+        chapter_title = _text(link) or f"第 {len(chapters) + 1} 章"
+        chapters.append(ChapterTask(index=len(chapters), chapter_id=chapter_id, title=chapter_title, url=chapter_url))
+
+    metadata = BookMetadata(
+        book_id=normalized.book_id,
+        title=title,
+        safe_title=safe_filename(title),
+        author=author,
+        detail_url=normalized.detail_url,
+        cover_url=cover_url,
+        intro_text=intro,
+        info_block=info_block,
+    )
+    return metadata, chapters
+
+
+def normalize_asset_url(url: str, base: str = BASE_URL) -> str:
+    value = unescape((url or "").strip())
+    if not value:
+        return ""
+    abs_url = urljoin(base, value)
+    parsed = urlparse(abs_url)
+    if parsed.scheme not in {"https", "http"}:
+        return ""
+    if parsed.hostname in ALLOWED_ESJ_HOSTS:
+        path = parsed.path
+        return f"{BASE_URL}{path}"
+    return abs_url
+
+
+def parse_chapter_content(html: str, chapter: ChapterTask) -> ChapterContent:
+    soup = BeautifulSoup(html, "lxml")
+    title = _text(soup.select_one("h2")) or chapter.title
+    author = _text(soup.select_one(".single-post-meta div"))
+    content = soup.select_one(".forum-content")
+    if not content:
+        raise ValueError(f"章节正文缺失: {chapter.title}")
+
+    for bad in content.select("script, style"):
+        bad.decompose()
+
+    html_body = str(content)
+    text_body = content.get_text("\n", strip=True)
+    text_body = re.sub(r"\n{3,}", "\n\n", text_body).strip()
+    if text_body.startswith(title):
+        text_body = text_body[len(title):].lstrip()
+
+    return ChapterContent(chapter=chapter, title=title, author=author, html=html_body, text=text_body)

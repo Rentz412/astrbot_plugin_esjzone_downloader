@@ -1,0 +1,7 @@
+{
+  "metadata": {
+    "display_name": "ESJZone Downloader",
+    "short_desc": "Download ESJZone novels as EPUB/TXT.",
+    "desc": "Download ESJZone novels, export EPUB/TXT, package ZIP, and manage local books with Dashboard."
+  }
+}

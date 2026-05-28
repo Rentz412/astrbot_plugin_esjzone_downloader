@@ -1,20 +1,18 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
-from hashlib import sha256
 from pathlib import Path
 from typing import Any
+from urllib.parse import urljoin
 
 import httpx
 from bs4 import BeautifulSoup
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import Fernet
 
-from .client import EsjHttpClient
 from .models import AuthContext, AuthResult, CookieValidationResult
-from .utils import is_allowed_cookie_domain, mask_email
-
 
 BASE_URL = "https://www.esjzone.one"
 LOGIN_PAGE_URL = f"{BASE_URL}/login"
@@ -22,308 +20,444 @@ AUTH_TOKEN_URL = f"{BASE_URL}/my/login"
 PASSWORD_LOGIN_URL = f"{BASE_URL}/inc/mem_login.php"
 PROFILE_URL = f"{BASE_URL}/my/profile.html"
 
+ALLOWED_COOKIE_DOMAINS = {
+    "www.esjzone.one",
+    ".esjzone.one",
+    "esjzone.one",
+    "www.esjzone.cc",
+    ".esjzone.cc",
+    "esjzone.cc",
+}
+
 
 class EsjAuthService:
-    def __init__(self, data_dir: Path, client: EsjHttpClient) -> None:
+    def __init__(self, data_dir: Path, config: Any, logger: Any = None):
         self.data_dir = data_dir
-        self.client = client
         self.auth_dir = data_dir / "auth"
         self.users_dir = self.auth_dir / "users"
         self.secret_path = self.auth_dir / "secret.key"
-        self.debug_dir = data_dir / "debug" / "auth"
-        self.debug_enabled = False
-        self.debug_save_responses = True
+        self.config = config
+        self.logger = logger
         self.users_dir.mkdir(parents=True, exist_ok=True)
-        self._fernet = self._load_or_create_fernet()
+        self.fernet = Fernet(self._load_or_create_key())
 
-    def configure_debug(self, enabled: bool, save_responses: bool = True) -> None:
-        self.debug_enabled = bool(enabled)
-        self.debug_save_responses = bool(save_responses)
-
-    def _load_or_create_fernet(self) -> Fernet:
+    def _load_or_create_key(self) -> bytes:
         self.auth_dir.mkdir(parents=True, exist_ok=True)
-        if not self.secret_path.exists():
-            self.secret_path.write_bytes(Fernet.generate_key())
-        return Fernet(self.secret_path.read_bytes())
+        if self.secret_path.exists():
+            return self.secret_path.read_bytes()
+        key = Fernet.generate_key()
+        self.secret_path.write_bytes(key)
+        return key
 
-    def _encrypt(self, text: str) -> str:
-        return self._fernet.encrypt(text.encode("utf-8")).decode("utf-8")
+    def _encrypt(self, value: str) -> str:
+        return self.fernet.encrypt(value.encode("utf-8")).decode("utf-8")
 
-    def _decrypt(self, token: str) -> str:
-        try:
-            return self._fernet.decrypt(token.encode("utf-8")).decode("utf-8")
-        except InvalidToken as exc:
-            raise ValueError("认证数据无法解密，可能 secret.key 已变化") from exc
+    def _decrypt(self, value: str) -> str:
+        return self.fernet.decrypt(value.encode("utf-8")).decode("utf-8")
 
-    def _debug_write_text(self, filename: str, text: str) -> None:
-        if not self.debug_enabled or not self.debug_save_responses:
-            return
-        self.debug_dir.mkdir(parents=True, exist_ok=True)
-        (self.debug_dir / filename).write_text(text, encoding="utf-8", errors="replace")
+    @staticmethod
+    def mask_email(email: str) -> str:
+        if "@" not in email:
+            return email[:2] + "***"
+        name, domain = email.split("@", 1)
+        return f"{name[:2]}***@{domain}"
 
-    def get_user_hash(self, event: Any) -> tuple[str, str, str]:
+    @staticmethod
+    def user_hash_from_event(event) -> tuple[str, str, str]:
         platform_id = ""
-        if hasattr(event, "get_platform_id"):
-            platform_id = event.get_platform_id() or ""
-        if not platform_id and hasattr(event, "get_platform_name"):
-            platform_id = event.get_platform_name() or ""
-        sender_id = event.get_sender_id()
-        user_key = f"{platform_id}:{sender_id}"
-        return sha256(user_key.encode("utf-8")).hexdigest(), platform_id, sender_id
+        sender_id = ""
+        for attr in ("get_platform_id", "get_platform_name"):
+            try:
+                platform_id = getattr(event, attr)() or platform_id
+            except Exception:
+                pass
+        try:
+            sender_id = event.get_sender_id()
+        except Exception:
+            sender_id = "unknown"
+        raw = f"{platform_id}:{sender_id}"
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest(), platform_id, sender_id
 
     def _user_file(self, user_hash: str) -> Path:
         return self.users_dir / f"{user_hash}.json"
 
-    async def login(self, email: str, password: str) -> AuthResult:
-        """登录 ESJZone。
+    def _debug_cfg(self) -> dict[str, Any]:
+        cfg = self.config.get("debug", {}) if hasattr(self.config, "get") else {}
+        return cfg if isinstance(cfg, dict) else {}
 
-        ESJZone 当前登录流程不能直接 POST 账号密码到 `/inc/mem_login.php`。
-        需要先访问登录页初始化会话，再通过 `/my/login` 获取 `Authorization`
-        token，最后携带该 token 提交账号密码登录。登录成功后接口可能返回 JSON
-        内部的“伪跳转”地址，因此还需要手动访问跳转页，让服务端会话和 Cookie
-        状态完整落盘。
-        """
-        client_kwargs: dict[str, Any] = {
-            "headers": {
-                "User-Agent": self.client.user_agent,
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "zh-CN,zh;q=0.9",
-                "Origin": BASE_URL,
-                "Referer": f"{BASE_URL}/",
+    def _debug_enabled(self) -> bool:
+        return bool(self._debug_cfg().get("enabled", False))
+
+    def _debug_dir(self) -> Path:
+        path = self.data_dir / "debug" / "auth"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _debug_log(self, message: str) -> None:
+        if self._debug_enabled() and self.logger:
+            self.logger.info(f"[esj.debug][auth] {message}")
+
+    def _debug_write_text(self, filename: str, text: str) -> None:
+        cfg = self._debug_cfg()
+        if not cfg.get("enabled", False) or not cfg.get("save_auth_pages", True):
+            return
+        (self._debug_dir() / filename).write_text(text, encoding="utf-8", errors="replace")
+
+    def _debug_write_json(self, filename: str, payload: dict[str, Any]) -> None:
+        cfg = self._debug_cfg()
+        if not cfg.get("enabled", False):
+            return
+        (self._debug_dir() / filename).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    @staticmethod
+    def _mask(value: str) -> str:
+        if not value:
+            return ""
+        return f"{value[:10]}...{value[-6:]}" if len(value) > 20 else "***"
+
+    def _cookie_summary_from_rows(self, rows: list[dict[str, Any]]) -> dict[str, Any]:
+        keys = {"ews_key", "ews_token", "ws_last", "ws_last_visit_code", "ws_last_visit_post"}
+        return {
+            "count": len(rows),
+            "keys": {
+                row.get("name", ""): self._mask(str(row.get("value", "")))
+                for row in rows
+                if row.get("name") in keys
             },
-            "follow_redirects": False,
-            "timeout": httpx.Timeout(self.client.timeout),
         }
-        if self.client.proxy:
-            client_kwargs["proxy"] = self.client.proxy
 
-        async with httpx.AsyncClient(**client_kwargs) as login_client:
-            # 1. 初始化登录会话，让站点下发初始 Cookie。
-            init_response = await login_client.get(
-                LOGIN_PAGE_URL,
-                headers={
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "Referer": f"{BASE_URL}/",
-                },
-            )
-            init_response.raise_for_status()
-            self._debug_write_text("login_page.html", init_response.text)
+    @staticmethod
+    def _cookie_header_from_rows(rows: list[dict[str, Any]]) -> str:
+        parts: list[str] = []
+        for row in rows:
+            name = str((row or {}).get("name", "")).strip()
+            value = str((row or {}).get("value", "")).strip()
+            if name and value:
+                parts.append(f"{name}={value}")
+        return "; ".join(parts)
 
-            # 2. 获取 ESJZone 登录接口要求的 Authorization token。
-            token_response = await login_client.post(
-                AUTH_TOKEN_URL,
-                data={"plxf": "getAuthToken"},
-                headers={
-                    "Accept": "text/javascript, text/html, application/xml, text/xml, */*",
-                    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-                    "X-Requested-With": "XMLHttpRequest",
-                    "Origin": BASE_URL,
-                    "Referer": AUTH_TOKEN_URL,
-                },
-            )
-            token_response.raise_for_status()
-            self._debug_write_text("auth_token_response.txt", token_response.text)
-            token_match = re.search(r"<JinJing>(.*?)</JinJing>", token_response.text, flags=re.DOTALL)
-            if not token_match:
-                return AuthResult(False, "登录失败：无法获取登录授权 token，可能站点登录接口已变化")
-            authorization_token = token_match.group(1).strip()
-            if not authorization_token:
-                return AuthResult(False, "登录失败：登录授权 token 为空")
+    @staticmethod
+    def _cookie_header_from_client(client: httpx.AsyncClient) -> str:
+        parts = []
+        for cookie in client.cookies.jar:
+            # 这里不能过滤得太死。ESJZone 有时会下发 host-only cookie，
+            # 裸 requests 脚本会完整保留并发送；插件也应尽量完整保存同站 cookie。
+            domain = (cookie.domain or "").lstrip(".")
+            if domain and not (domain == "esjzone.one" or domain.endswith(".esjzone.one") or domain == "esjzone.cc" or domain.endswith(".esjzone.cc")):
+                continue
+            if not cookie.name or not cookie.value:
+                continue
+            parts.append(f"{cookie.name}={cookie.value}")
+        return "; ".join(parts)
 
-            # 3. 携带 Authorization token 提交账号密码。
-            login_response = await login_client.post(
+    @staticmethod
+    def _cookie_jar_dump(client: httpx.AsyncClient) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        now = time.time()
+        for cookie in client.cookies.jar:
+            if cookie.domain not in ALLOWED_COOKIE_DOMAINS:
+                continue
+            if cookie.expires and cookie.expires < now:
+                continue
+            rows.append({
+                "name": cookie.name,
+                "value": cookie.value,
+                "domain": cookie.domain,
+                "path": cookie.path or "/",
+                "expires": cookie.expires,
+                "secure": cookie.secure,
+            })
+        return rows
+
+    async def fetch_login_authorization_token(self, client: httpx.AsyncClient) -> str:
+        response = await client.post(
+            AUTH_TOKEN_URL,
+            data={"plxf": "getAuthToken"},
+            headers={
+                "Accept": "text/javascript, text/html, application/xml, text/xml, */*",
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "X-Requested-With": "XMLHttpRequest",
+                "Origin": BASE_URL,
+                "Referer": AUTH_TOKEN_URL,
+            },
+        )
+        response.raise_for_status()
+        match = re.search(r"<JinJing>(.*?)</JinJing>", response.text, flags=re.DOTALL)
+        if not match:
+            raise RuntimeError("未能从 getAuthToken 响应中提取 JinJing token")
+        return match.group(1).strip()
+
+    async def login(self, email: str, password: str) -> AuthResult:
+        headers = {
+            "User-Agent": self.config.get("download", {}).get("user_agent", "Mozilla/5.0"),
+            "Accept-Language": "zh-CN,zh;q=0.9",
+        }
+        async with httpx.AsyncClient(headers=headers, timeout=20, follow_redirects=True) as client:
+            client.cookies.clear()
+            self._debug_log(f"login start email={self.mask_email(email)}")
+            page = await client.get(LOGIN_PAGE_URL, headers={"Referer": BASE_URL + "/"})
+            page.raise_for_status()
+            self._debug_write_text("login_page.html", page.text)
+            self._debug_log(f"login page status={page.status_code} final_url={page.url} len={len(page.text)}")
+
+            token = await self.fetch_login_authorization_token(client)
+            self._debug_log(f"auth token fetched len={len(token)}")
+
+            response = await client.post(
                 PASSWORD_LOGIN_URL,
                 data={"email": email, "pwd": password, "remember_me": "on"},
                 headers={
                     "Accept": "*/*",
-                    "Authorization": authorization_token,
+                    "Authorization": token,
                     "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
                     "X-Requested-With": "XMLHttpRequest",
                     "Origin": BASE_URL,
                     "Referer": AUTH_TOKEN_URL,
                 },
             )
-            login_response.raise_for_status()
-            self._debug_write_text("password_login_response.txt", login_response.text)
+            response.raise_for_status()
+            self._debug_write_text("mem_login_response.txt", response.text)
+            self._debug_log(f"mem_login status={response.status_code} final_url={response.url} len={len(response.text)}")
 
-            # 4. 登录接口成功时常返回 JSON 内部跳转，而不是 HTTP 301。
             try:
-                payload = login_response.json()
-            except ValueError:
+                payload = response.json()
+            except json.JSONDecodeError:
                 payload = {}
-            redirect_url = str(payload.get("url") or "").replace("\\/", "/")
+            redirect_url = payload.get("url") if isinstance(payload, dict) else None
             if redirect_url:
-                redirect_target = str(httpx.URL(BASE_URL).join(redirect_url))
-                redirect_response = await login_client.get(
-                    redirect_target,
-                    headers={
-                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                        "Referer": AUTH_TOKEN_URL,
-                    },
-                )
-                redirect_response.raise_for_status()
+                redirect_url = str(redirect_url).replace("\\/", "/")
+                redirect_url = urljoin(BASE_URL, redirect_url)
+                redirect_response = await client.get(redirect_url, headers={"Referer": LOGIN_PAGE_URL})
                 self._debug_write_text("login_redirect.html", redirect_response.text)
+                self._debug_log(f"login redirect final_url={redirect_response.url} status={redirect_response.status_code} len={len(redirect_response.text)}")
 
-            # 5. 用个人资料页作为最终登录态校验依据。
-            validation = await self.validate_client_cookie(login_client)
+            validation = await self.validate_client_cookie(client)
+            cookie_rows = self._cookie_jar_dump(client)
+            self._debug_write_json(
+                "login_result.json",
+                {
+                    "success": validation.valid,
+                    "username": validation.username,
+                    "reason": validation.reason,
+                    "cookie_header_length": len(self._cookie_header_from_client(client)),
+                    "cookie_summary": self._cookie_summary_from_rows(cookie_rows),
+                },
+            )
             if not validation.valid:
-                return AuthResult(False, validation.message or "登录失败：Cookie 校验未通过")
+                return AuthResult(False, reason=validation.reason or "登录后个人资料页校验失败")
 
-            cookie_jar = self._serialize_cookies(login_client.cookies.jar)
-            cookie_header = self._cookie_header(cookie_jar)
-            if not cookie_header:
-                return AuthResult(False, "登录失败：站点未返回有效 Cookie")
+            if self.logger:
+                self.logger.info(
+                    f"[esj.auth] login ok username={validation.username or '-'} "
+                    f"cookie_jar={len(self._cookie_jar_dump(client))} "
+                    f"cookie_header_len={len(self._cookie_header_from_client(client))}"
+                )
 
             return AuthResult(
                 success=True,
-                message="登录成功",
-                cookie=cookie_header,
-                cookie_jar=cookie_jar,
                 username=validation.username,
+                cookie_header=self._cookie_header_from_client(client),
+                cookie_jar=self._cookie_jar_dump(client),
             )
 
-    async def save_login(self, event: Any, email: str, password: str, result: AuthResult) -> None:
-        user_hash, platform_id, _ = self.get_user_hash(event)
-        now = int(time.time())
+    async def validate_cookie(self, cookie: str) -> CookieValidationResult:
+        headers = {"User-Agent": self.config.get("download", {}).get("user_agent", "Mozilla/5.0")}
+        cookies = httpx.Cookies()
+        for part in (cookie or "").split(";"):
+            name, sep, value = part.strip().partition("=")
+            if sep and name and value:
+                cookies.set(name.strip(), value.strip(), domain=".esjzone.one", path="/")
+
+        async with httpx.AsyncClient(
+            headers=headers,
+            cookies=cookies if len(cookies) > 0 else None,
+            timeout=20,
+            follow_redirects=True,
+        ) as client:
+            return await self.validate_client_cookie(client)
+
+    async def validate_client_cookie(self, client: httpx.AsyncClient) -> CookieValidationResult:
+        try:
+            response = await client.get(PROFILE_URL, headers={"Referer": BASE_URL + "/"})
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            return CookieValidationResult(False, unknown=True, reason=f"网络错误: {type(exc).__name__}")
+
+        html = response.text
+        self._debug_write_text("profile_validate.html", html)
+        self._debug_log(f"profile validate status={response.status_code} final_url={response.url} len={len(html)}")
+
+        if "window.location.href='/my/login';" in html or 'window.location.href="/my/login";' in html:
+            self._debug_write_json(
+                "profile_validate.json",
+                {
+                    "valid": False,
+                    "reason": "Cookie 已失效",
+                    "final_url": str(response.url),
+                    "html_length": len(html),
+                    "contains_login_redirect": True,
+                    "cookie_summary": self._cookie_summary_from_rows(self._cookie_jar_dump(client)),
+                },
+            )
+            return CookieValidationResult(False, reason="Cookie 已失效")
+
+        soup = BeautifulSoup(html, "lxml")
+        username_node = soup.select_one("h6.user-name")
+        if username_node:
+            username = username_node.get_text(" ", strip=True)
+            self._debug_write_json(
+                "profile_validate.json",
+                {
+                    "valid": True,
+                    "username": username,
+                    "final_url": str(response.url),
+                    "html_length": len(html),
+                    "cookie_summary": self._cookie_summary_from_rows(self._cookie_jar_dump(client)),
+                },
+            )
+            return CookieValidationResult(True, username=username)
+
+        self._debug_write_json(
+            "profile_validate.json",
+            {
+                "valid": False,
+                "reason": "无法识别个人资料页登录态",
+                "final_url": str(response.url),
+                "html_length": len(html),
+                "contains_user_name": False,
+                "contains_login_markers": any(marker in html for marker in ("登录", "登入", "/my/login", "/login")),
+                "cookie_summary": self._cookie_summary_from_rows(self._cookie_jar_dump(client)),
+            },
+        )
+        return CookieValidationResult(False, reason="无法识别个人资料页登录态")
+
+    async def save_user_auth(self, event, email: str, password: str, result: AuthResult) -> None:
+        user_hash, platform_id, _sender_id = self.user_hash_from_event(event)
+        cookie_from_jar = self._cookie_header_from_rows(result.cookie_jar)
+        cookie_header = cookie_from_jar if len(cookie_from_jar) > len(result.cookie_header or "") else result.cookie_header
         payload = {
             "version": 1,
             "platform_id": platform_id,
             "user_id_hash": user_hash,
             "email_encrypted": self._encrypt(email),
             "password_encrypted": self._encrypt(password),
-            "cookie_header_encrypted": self._encrypt(result.cookie),
+            "cookie_header_encrypted": self._encrypt(cookie_header),
             "cookie_jar_encrypted": self._encrypt(json.dumps(result.cookie_jar, ensure_ascii=False)),
-            "cookie_updated_at": now,
-            "last_login_at": now,
-            "last_check_at": now,
+            "cookie_updated_at": int(time.time()),
+            "last_login_at": int(time.time()),
+            "last_check_at": int(time.time()),
             "status": "valid",
-            "email_masked": mask_email(email),
-            "username_masked": result.username or "",
+            "username_masked": result.username or self.mask_email(email),
         }
-        path = self._user_file(user_hash)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    async def validate_cookie(self, cookie: str) -> CookieValidationResult:
-        try:
-            headers = {
-                "User-Agent": self.client.user_agent,
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "zh-CN,zh;q=0.9",
-                "Origin": BASE_URL,
-                "Referer": f"{BASE_URL}/",
-                "Cookie": cookie,
-            }
-            client_kwargs: dict[str, Any] = {
-                "headers": headers,
-                "follow_redirects": False,
-                "timeout": httpx.Timeout(self.client.timeout),
-            }
-            if self.client.proxy:
-                client_kwargs["proxy"] = self.client.proxy
-            async with httpx.AsyncClient(**client_kwargs) as validate_client:
-                html = await self._fetch_profile_html(validate_client)
-        except Exception as exc:
-            return CookieValidationResult(False, unknown=True, message=f"网络错误：{type(exc).__name__}")
-
-        self._debug_write_text("profile_validation.html", html)
-        return self._parse_profile_validation(html)
-
-    async def validate_client_cookie(self, client: Any) -> CookieValidationResult:
-        try:
-            html = await self._fetch_profile_html(client)
-        except Exception as exc:
-            return CookieValidationResult(False, unknown=True, message=f"网络错误：{type(exc).__name__}")
-        self._debug_write_text("profile_validation.html", html)
-        return self._parse_profile_validation(html)
+        self._debug_write_json(
+            "save_user_auth.json",
+            {
+                "user_hash_prefix": user_hash[:12],
+                "cookie_header_length": len(cookie_header),
+                "raw_result_cookie_header_length": len(result.cookie_header or ""),
+                "cookie_from_jar_length": len(cookie_from_jar),
+                "cookie_summary": self._cookie_summary_from_rows(result.cookie_jar),
+            },
+        )
+        self._user_file(user_hash).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     async def refresh_cookie(self, user_hash: str) -> AuthResult:
-        record = self._load_user_record(user_hash)
-        if not record:
-            return AuthResult(False, "未找到登录记录")
-        email = self._decrypt(record.get("email_encrypted", ""))
-        password = self._decrypt(record.get("password_encrypted", ""))
+        path = self._user_file(user_hash)
+        if not path.exists():
+            return AuthResult(False, reason="未找到用户认证文件")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        email = self._decrypt(payload["email_encrypted"])
+        password = self._decrypt(payload["password_encrypted"])
         result = await self.login(email, password)
         if result.success:
-            now = int(time.time())
-            record["cookie_header_encrypted"] = self._encrypt(result.cookie)
-            record["cookie_jar_encrypted"] = self._encrypt(json.dumps(result.cookie_jar, ensure_ascii=False))
-            record["cookie_updated_at"] = now
-            record["last_login_at"] = now
-            record["last_check_at"] = now
-            record["status"] = "valid"
-            record["username_masked"] = result.username or ""
-            self._user_file(user_hash).write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+            payload["cookie_header_encrypted"] = self._encrypt(result.cookie_header)
+            payload["cookie_jar_encrypted"] = self._encrypt(json.dumps(result.cookie_jar, ensure_ascii=False))
+            payload["cookie_updated_at"] = int(time.time())
+            payload["last_login_at"] = int(time.time())
+            payload["status"] = "valid"
+            payload["username_masked"] = result.username or self.mask_email(email)
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return result
 
-    async def get_auth_context(self, event: Any) -> AuthContext | None:
-        user_hash, platform_id, sender_id = self.get_user_hash(event)
-        record = self._load_user_record(user_hash)
-        if not record:
+    async def get_auth_context(self, event) -> AuthContext | None:
+        user_hash, platform_id, sender_id = self.user_hash_from_event(event)
+        path = self._user_file(user_hash)
+        if not path.exists():
             return None
 
-        cookie = self._decrypt(record.get("cookie_header_encrypted", ""))
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        cookie = self._decrypt(payload.get("cookie_header_encrypted", ""))
+        cookie_jar: list[dict[str, Any]] = []
+        encrypted_cookie_jar = payload.get("cookie_jar_encrypted", "")
+        if encrypted_cookie_jar:
+            try:
+                cookie_jar = json.loads(self._decrypt(encrypted_cookie_jar))
+            except Exception:
+                cookie_jar = []
+
+        cookie_from_jar = self._cookie_header_from_rows(cookie_jar)
+        if len(cookie_from_jar) > len(cookie):
+            self._debug_log(
+                f"use cookie header rebuilt from jar old_len={len(cookie)} jar_len={len(cookie_from_jar)}"
+            )
+            cookie = cookie_from_jar
+
+        self._debug_log(
+            f"auth context loaded user_hash={user_hash[:12]} cookie_header_len={len(cookie)} cookie_jar={len(cookie_jar)}"
+        )
+        self._debug_write_json(
+            "auth_context_loaded.json",
+            {
+                "user_hash_prefix": user_hash[:12],
+                "cookie_header_length": len(cookie),
+                "cookie_from_jar_length": len(cookie_from_jar),
+                "cookie_jar_count": len(cookie_jar),
+                "cookie_summary": self._cookie_summary_from_rows(cookie_jar),
+            },
+        )
         validation = await self.validate_cookie(cookie)
-        record["last_check_at"] = int(time.time())
+        payload["last_check_at"] = int(time.time())
 
         if validation.valid:
-            record["status"] = "valid"
-            self._user_file(user_hash).write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
             return AuthContext(
                 user_hash=user_hash,
                 platform_id=platform_id,
                 sender_id=sender_id,
                 cookie=cookie,
-                email_masked=record.get("email_masked"),
-                username=validation.username or record.get("username_masked"),
-                login_valid=True,
+                cookie_jar=cookie_jar,
+                username=validation.username,
+                email_masked=payload.get("username_masked"),
             )
 
         if validation.unknown:
-            self._user_file(user_hash).write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
-            return AuthContext(
-                user_hash=user_hash,
-                platform_id=platform_id,
-                sender_id=sender_id,
-                cookie=cookie,
-                email_masked=record.get("email_masked"),
-                username=record.get("username_masked"),
-                login_valid=True,
-            )
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            return None
 
-        refreshed = await self.refresh_cookie(user_hash)
-        if not refreshed.success:
-            record["status"] = "invalid"
-            self._user_file(user_hash).write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+        refresh = await self.refresh_cookie(user_hash)
+        if not refresh.success:
+            payload["status"] = "invalid"
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
             return None
 
         return AuthContext(
             user_hash=user_hash,
             platform_id=platform_id,
             sender_id=sender_id,
-            cookie=refreshed.cookie,
-            email_masked=record.get("email_masked"),
-            username=refreshed.username,
-            login_valid=True,
+            cookie=refresh.cookie_header,
+            cookie_jar=refresh.cookie_jar,
+            username=refresh.username,
             refreshed=True,
         )
 
-    async def require_auth_or_reply(self, event: Any) -> AuthContext | None:
+    async def require_auth_or_reply(self, event) -> AuthContext | None:
         auth = await self.get_auth_context(event)
         if auth:
             return auth
-        group_id = ""
-        if hasattr(event, "get_group_id"):
-            group_id = event.get_group_id() or ""
-        if group_id:
-            yield_text = "你尚未登录 ESJZone。请私聊机器人执行 /esj l <邮箱> <密码> 后再使用该命令。"
-        else:
-            yield_text = "你尚未登录 ESJZone，无法执行该命令。\n\n请发送：/esj l <邮箱> <密码>"
-        await event.send(event.plain_result(yield_text))
         return None
 
-    async def logout_user(self, event: Any) -> bool:
-        user_hash, _, _ = self.get_user_hash(event)
+    async def logout_user(self, event) -> bool:
+        user_hash, _, _ = self.user_hash_from_event(event)
         path = self._user_file(user_hash)
         if path.exists():
             path.unlink()
@@ -336,83 +470,3 @@ class EsjAuthService:
             path.unlink()
             count += 1
         return count
-
-    async def _fetch_profile_html(self, client: httpx.AsyncClient) -> str:
-        response = await client.get(PROFILE_URL)
-        if response.is_redirect:
-            location = response.headers.get("location", "")
-            if "/my/login" in location or "/login" in location:
-                return "window.location.href='/my/login';"
-        response.raise_for_status()
-        return response.text
-
-    def _parse_profile_validation(self, html: str) -> CookieValidationResult:
-        if "window.location.href='/my/login';" in html or 'window.location.href="/my/login";' in html:
-            return CookieValidationResult(False, message="Cookie 已失效")
-
-        soup = BeautifulSoup(html, "lxml")
-        username_node = soup.select_one("h6.user-name")
-        if username_node:
-            return CookieValidationResult(True, username=username_node.get_text(" ", strip=True), message="Cookie 有效")
-
-        # 兼容站点轻微结构变化：profile 页没有跳登录，且包含用户资料区域时，不要直接判定失效。
-        profile_markers = ("/my/logout", "會員", "会员", "profile", "user-name")
-        if any(marker in html for marker in profile_markers):
-            return CookieValidationResult(True, username=None, message="Cookie 有效")
-
-        return CookieValidationResult(False, unknown=True, message="无法识别登录状态")
-
-    def cookie_summary(self, cookie: str) -> str:
-        cookie_map: dict[str, str] = {}
-        for part in cookie.split(";"):
-            name, sep, value = part.strip().partition("=")
-            if sep and name:
-                cookie_map[name] = value
-
-        lines: list[str] = []
-        for name in ("ews_key", "ews_token", "ws_last", "ws_last_visit_code", "ws_last_visit_post"):
-            value = cookie_map.get(name)
-            if value:
-                masked = f"{value[:12]}...{value[-8:]}" if len(value) > 24 else "***"
-                lines.append(f"{name}={masked}")
-            else:
-                lines.append(f"{name}=<未找到>")
-        return "\n".join(lines)
-
-    def _load_user_record(self, user_hash: str) -> dict[str, Any] | None:
-        path = self._user_file(user_hash)
-        if not path.exists():
-            return None
-        return json.loads(path.read_text(encoding="utf-8"))
-
-    def _serialize_cookies(self, jar: Any) -> list[dict[str, Any]]:
-        items: list[dict[str, Any]] = []
-        for cookie in jar:
-            domain = getattr(cookie, "domain", "") or "www.esjzone.one"
-            name = getattr(cookie, "name", "")
-            value = getattr(cookie, "value", "")
-            path = getattr(cookie, "path", "/") or "/"
-            expires = getattr(cookie, "expires", None)
-            if not name or not value:
-                continue
-            if not is_allowed_cookie_domain(domain):
-                continue
-            if not path.startswith("/"):
-                continue
-            if expires and int(expires) < int(time.time()):
-                continue
-            items.append(
-                {
-                    "name": name,
-                    "value": value,
-                    "domain": domain,
-                    "path": path,
-                    "expires": expires,
-                    "secure": bool(getattr(cookie, "secure", False)),
-                    "httponly": "httponly" in getattr(cookie, "_rest", {}),
-                }
-            )
-        return items
-
-    def _cookie_header(self, cookie_jar: list[dict[str, Any]]) -> str:
-        return "; ".join(f"{item['name']}={item['value']}" for item in cookie_jar if item.get("name") and item.get("value"))
