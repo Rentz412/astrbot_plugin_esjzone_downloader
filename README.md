@@ -2,8 +2,9 @@
 # ESJ Zone 小说下载插件
 
 一个用于 AstrBot 的 ESJZone 小说下载插件。
-本插件用于在 AstrBot 中通过聊天命令下载 ESJZone 小说，支持用户独立登录、自动 Cookie 校验、EPUB / TXT 导出、本地书库缓存、ZIP 打包发送和可选 Dashboard 管理页面。
-!!!注意：目前插件仍处于初步开发中，有部分功能不可用/出现问题，欢迎提交issue！！！
+本插件用于在 AstrBot 中通过聊天命令下载 ESJZone 小说，支持用户独立登录、自动 Cookie 校验、EPUB / TXT 导出、本地书库缓存、ZIP 打包发送和可选 Dashboard 管理页面。、
+
+！！！注意：目前插件仍处于初步开发中，有部分功能不可用/出现问题，欢迎提交issue！！！
 
 ## 插件已实现的功能
 
