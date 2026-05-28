@@ -1,3 +1,7 @@
+"""小说下载编排服务。
+
+负责从详情页解析元数据与章节列表，按章节下载正文和图片，最终调用导出器与打包器生成可发送文件。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -17,7 +21,9 @@ from .repository import EsjRepository
 
 
 class EsjDownloader:
+    """编排书籍信息获取、章节下载、图片处理、导出与打包流程。"""
     def __init__(self, data_dir: Path, config: Mapping, logger: Any = None):
+        """初始化对象依赖和运行时目录。"""
         self.data_dir = data_dir
         self.config = config
         self.logger = logger
@@ -29,22 +35,27 @@ class EsjDownloader:
         self.packer = ZipPacker(config)
 
     def _debug_cfg(self) -> dict[str, Any]:
+        """读取调试配置。"""
         cfg = self.config.get("debug", {}) if hasattr(self.config, "get") else {}
         return cfg if isinstance(cfg, dict) else {}
 
     def _debug_enabled(self) -> bool:
+        """判断调试输出是否启用。"""
         return bool(self._debug_cfg().get("enabled", False))
 
     def _debug_dir(self) -> Path:
+        """创建并返回调试文件目录。"""
         path = self.data_dir / "debug" / "pages"
         path.mkdir(parents=True, exist_ok=True)
         return path
 
     def _debug_log(self, message: str) -> None:
+        """按配置输出调试日志。"""
         if self._debug_enabled() and self.logger:
             self.logger.info(f"[esj.debug][downloader] {message}")
 
     def _debug_write_text(self, filename: str, text: str, chapter_page: bool = False) -> None:
+        """按配置保存调试文本。"""
         cfg = self._debug_cfg()
         if not cfg.get("enabled", False):
             return
@@ -55,6 +66,7 @@ class EsjDownloader:
         (self._debug_dir() / filename).write_text(text, encoding="utf-8", errors="replace")
 
     def _debug_write_json(self, filename: str, payload: dict[str, Any]) -> None:
+        """按配置保存结构化调试信息。"""
         cfg = self._debug_cfg()
         if not cfg.get("enabled", False):
             return
@@ -62,11 +74,13 @@ class EsjDownloader:
 
     @staticmethod
     def _safe_name(value: str) -> str:
+        """生成适合文件系统使用的安全名称。"""
         cleaned = re.sub(r"[^0-9A-Za-z_.-]+", "_", value or "")
         return cleaned.strip("._") or "unknown"
 
     @staticmethod
     def _html_title(html: str) -> str:
+        """从 HTML 中提取页面标题，常用于异常诊断。"""
         match = re.search(r"<title[^>]*>(.*?)</title>", html, flags=re.IGNORECASE | re.DOTALL)
         if not match:
             return ""
@@ -74,6 +88,7 @@ class EsjDownloader:
 
     @staticmethod
     def _looks_like_login_or_home(html: str) -> bool:
+        """粗略识别被重定向到登录页或首页的异常响应。"""
         markers = (
             "注册",
             "註冊",
@@ -87,6 +102,7 @@ class EsjDownloader:
         return any(marker in html for marker in markers)
 
     def _range_slice(self, total: int, start: int = 0, end: int = 0) -> slice:
+        """将用户输入的 1-based 章节范围转换为 Python 切片。"""
         if total <= 0:
             return slice(0, 0)
         start_idx = max((start or 1) - 1, 0)
@@ -96,6 +112,7 @@ class EsjDownloader:
         return slice(start_idx, end_idx)
 
     async def fetch_info(self, auth: AuthContext, raw: str):
+        """获取书籍详情页并解析元数据和章节列表。"""
         normalized = normalize_esj_input(raw)
         safe_book_id = self._safe_name(normalized.book_id)
         self._debug_log(
@@ -138,6 +155,7 @@ class EsjDownloader:
         return metadata, chapters
 
     async def download(self, auth: AuthContext, raw: str, fmt: str = "epub", start: int = 0, end: int = 0) -> DownloadResult:
+        """下载指定范围章节，导出目标格式并打包。"""
         fmt = (fmt or self.config.get("download", {}).get("default_format", "epub")).lower()
         if fmt not in {"epub", "txt"}:
             raise ValueError("当前版本仅支持 epub 和 txt。")
@@ -172,6 +190,7 @@ class EsjDownloader:
 
         async with self.client_factory.build_client(auth) as client:
             async def fetch_one(chapter):
+                """下载单个章节并写入本地缓存。"""
                 nonlocal failed
                 async with semaphore:
                     try:

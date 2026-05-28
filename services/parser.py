@@ -1,3 +1,7 @@
+"""ESJZone 页面解析工具。
+
+负责标准化用户输入、解析书籍详情页和章节页，并将站点 HTML 转换为内部数据模型。"""
+
 from __future__ import annotations
 
 import re
@@ -19,6 +23,7 @@ DIGITS_RE = re.compile(r"^\d+$")
 
 
 def safe_filename(name: str, max_len: int = 120) -> str:
+    """清理文件名中的非法字符并限制长度。"""
     cleaned = re.sub(r'[\\/:*?"<>|\r\n\t]+', "_", name).strip(" ._")
     cleaned = cleaned or "untitled"
     reserved = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
@@ -28,6 +33,7 @@ def safe_filename(name: str, max_len: int = 120) -> str:
 
 
 def normalize_esj_input(raw: str) -> NormalizedEsjUrl:
+    """将编号、详情页或目录页输入统一成详情页 URL。"""
     value = (raw or "").strip()
     if not value:
         raise ValueError("URL 或书籍编号不能为空")
@@ -92,12 +98,14 @@ def normalize_esj_input(raw: str) -> NormalizedEsjUrl:
 
 
 def _text(node) -> str:
+    """提取节点文本并压缩多余空白。"""
     if not node:
         return ""
     return re.sub(r"\s+", " ", node.get_text(" ", strip=True)).strip()
 
 
 def parse_book_detail(html: str, normalized: NormalizedEsjUrl) -> tuple[BookMetadata, list[ChapterTask]]:
+    """解析详情页中的书籍元数据和章节任务列表。"""
     soup = BeautifulSoup(html, "lxml")
 
     title = _text(soup.select_one(".book-detail h2.text-normal"))
@@ -154,6 +162,7 @@ def parse_book_detail(html: str, normalized: NormalizedEsjUrl) -> tuple[BookMeta
 
 
 def normalize_asset_url(url: str, base: str = BASE_URL) -> str:
+    """将图片等资源地址标准化为绝对 URL。"""
     value = unescape((url or "").strip())
     if not value:
         return ""
@@ -168,6 +177,7 @@ def normalize_asset_url(url: str, base: str = BASE_URL) -> str:
 
 
 def parse_chapter_content(html: str, chapter: ChapterTask) -> ChapterContent:
+    """解析章节页正文、标题、作者和文本内容。"""
     soup = BeautifulSoup(html, "lxml")
     title = _text(soup.select_one("h2")) or chapter.title
     author = _text(soup.select_one(".single-post-meta div"))

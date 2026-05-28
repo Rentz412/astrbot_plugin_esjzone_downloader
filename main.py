@@ -1,3 +1,7 @@
+"""AstrBot 插件入口模块。
+
+负责初始化 ESJZone 下载器的核心服务、注册聊天命令与 Dashboard API，并将用户请求路由到认证、下载、仓储等服务层。"""
+
 from __future__ import annotations
 
 import secrets
@@ -22,10 +26,12 @@ PLUGIN_NAME = "astrbot_plugin_esjzone_downloader"
     PLUGIN_NAME,
     "Rentz",
     "ESJZone 小说下载器，支持登录、EPUB/TXT 导出、ZIP 打包和 Dashboard 管理。",
-    "0.2.0",
+    "1.0.0",
 )
 class EsjZoneDownloaderPlugin(Star):
+    """AstrBot 插件主类，负责连接聊天命令、Web API 与底层下载服务。"""
     def __init__(self, context: Context, config: AstrBotConfig):
+        """初始化对象依赖和运行时目录。"""
         super().__init__(context)
         self.context = context
         self.config = config
@@ -41,6 +47,7 @@ class EsjZoneDownloaderPlugin(Star):
         self._register_web_apis()
 
     def _ensure_config_defaults(self) -> None:
+        """补齐缺省配置，避免旧配置缺字段导致运行时报错。"""
         self.config.setdefault("dashboard", {})
         dash = self.config["dashboard"]
         dash.setdefault("enabled", False)
@@ -73,6 +80,7 @@ class EsjZoneDownloaderPlugin(Star):
                 logger.warning("Dashboard token 已生成，但配置保存失败。")
 
     def _webui_url(self) -> str:
+        """根据 Dashboard 配置生成对用户展示的访问地址。"""
         dash = self.config.get("dashboard", {})
         public_base_url = (dash.get("public_base_url") or "").rstrip("/")
         if public_base_url:
@@ -83,19 +91,23 @@ class EsjZoneDownloaderPlugin(Star):
         return f"http://{display_host}:{port}/"
 
     def _message_cfg(self) -> dict[str, Any]:
+        """读取消息回复相关配置，并兼容非字典配置。"""
         cfg = self.config.get("message", {}) if hasattr(self.config, "get") else {}
         return cfg if isinstance(cfg, dict) else {}
 
     def _is_verbose_reply(self, event: AstrMessageEvent) -> bool:
+        """判断当前场景是否应该返回详细进度信息。"""
         cfg = self._message_cfg()
         if self._is_group_event(event):
             return bool(cfg.get("group_verbose_status", False))
         return bool(cfg.get("private_verbose_status", True))
 
     def _should_mention(self, event: AstrMessageEvent) -> bool:
+        """判断群聊回复是否需要 @ 触发用户。"""
         return self._is_group_event(event) and bool(self._message_cfg().get("group_mention_user", True))
 
     def _reply(self, event: AstrMessageEvent, text: str):
+        """统一构造回复消息，兼容群聊 @ 和普通文本回复。"""
         if self._should_mention(event):
             try:
                 return event.chain_result([
@@ -108,11 +120,13 @@ class EsjZoneDownloaderPlugin(Star):
         return event.plain_result(text)
 
     def _download_start_text(self, event: AstrMessageEvent, fmt: str) -> str:
+        """生成下载开始提示文案。"""
         if self._is_verbose_reply(event):
             return f"任务开始：正在下载并导出 {fmt.upper()}。"
         return "正在开始任务"
 
     def _download_done_text(self, event: AstrMessageEvent, result) -> str:
+        """生成下载完成提示文案。"""
         if self._is_verbose_reply(event):
             return (
                 f"下载完成：{result.title}\n"
@@ -124,6 +138,7 @@ class EsjZoneDownloaderPlugin(Star):
         return f"下载完成，正在发送文件。ZIP 密码：{result.password}"
 
     def _register_web_apis(self) -> None:
+        """向 AstrBot 注册 Dashboard 所需的后端 API。"""
         try:
             self.context.register_web_api(f"/{PLUGIN_NAME}/books", self.api_books, ["GET"], "List local books")
             self.context.register_web_api(f"/{PLUGIN_NAME}/books/detail", self.api_book_detail, ["GET"], "Book detail")
@@ -134,9 +149,11 @@ class EsjZoneDownloaderPlugin(Star):
             logger.warning(f"注册 Web API 失败，可能当前 AstrBot 版本不支持 Pages API: {exc}")
 
     def _dashboard_enabled(self) -> bool:
+        """判断 Dashboard 功能是否启用。"""
         return bool(self.config.get("dashboard", {}).get("enabled", False))
 
     def _check_token(self, request: Any) -> bool:
+        """校验 Dashboard API 请求携带的访问 Token。"""
         dash = self.config.get("dashboard", {})
         if not dash.get("auth_enabled", True):
             return True
@@ -149,6 +166,7 @@ class EsjZoneDownloaderPlugin(Star):
         return bool(configured) and secrets.compare_digest(str(token), str(configured))
 
     async def api_books(self, request):
+        """返回本地书库列表。"""
         if not self._dashboard_enabled():
             return {"ok": False, "error": "dashboard disabled"}
         if not self._check_token(request):
@@ -156,6 +174,7 @@ class EsjZoneDownloaderPlugin(Star):
         return {"ok": True, "books": self.repository.list_books()}
 
     async def api_book_detail(self, request):
+        """返回指定书籍的本地状态详情。"""
         if not self._dashboard_enabled():
             return {"ok": False, "error": "dashboard disabled"}
         if not self._check_token(request):
@@ -165,6 +184,7 @@ class EsjZoneDownloaderPlugin(Star):
         return {"ok": bool(status), "book": status}
 
     async def api_book_delete(self, request):
+        """删除指定书籍的本地缓存和输出。"""
         if not self._dashboard_enabled():
             return {"ok": False, "error": "dashboard disabled"}
         if not self._check_token(request):
@@ -174,9 +194,11 @@ class EsjZoneDownloaderPlugin(Star):
         return {"ok": self.repository.clear_book(book_id)}
 
     async def api_file_download(self, request):
+        """预留文件下载接口，等待适配 AstrBot 响应对象。"""
         return {"ok": False, "error": "文件下载 API 需按 AstrBot 当前版本的响应对象适配。"}
 
     async def api_token_check(self, request):
+        """供前端检查当前 Token 是否有效。"""
         return {"ok": self._check_token(request)}
 
     @filter.command_group("esj")
@@ -417,21 +439,25 @@ class EsjZoneDownloaderPlugin(Star):
         )
 
     def _is_group_event(self, event: AstrMessageEvent) -> bool:
+        """兼容不同平台事件对象，判断是否来自群聊。"""
         try:
             return bool(event.get_group_id())
         except Exception:
             return False
 
     def _is_admin(self, event: AstrMessageEvent) -> bool:
+        """兼容不同平台事件对象，判断操作者是否管理员。"""
         try:
             return bool(event.is_admin())
         except Exception:
             return True
 
     def _not_login_text(self, event: AstrMessageEvent) -> str:
+        """根据私聊/群聊场景生成未登录提示。"""
         if self._is_group_event(event):
             return "你尚未登录 ESJZone。请私聊机器人执行 /esj l <邮箱> <密码> 后再使用该命令。"
         return "你尚未登录 ESJZone，无法执行该命令。\n\n请发送：\n/esj l <邮箱> <密码>"
 
     async def terminate(self):
+        """插件卸载或停用时执行的清理钩子。"""
         logger.info("astrbot_plugin_esjzone_downloader terminated.")

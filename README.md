@@ -1,6 +1,32 @@
 # astrbot_plugin_esjzone_downloader
+# ESJ Zone 小说下载插件
 
-ESJZone 小说下载 AstrBot 插件。
+一个用于 AstrBot 的 ESJZone 小说下载插件。
+本插件用于在 AstrBot 中通过聊天命令下载 ESJZone 小说，支持用户独立登录、自动 Cookie 校验、EPUB / TXT 导出、本地书库缓存、ZIP 打包发送和可选 Dashboard 管理页面。
+!!!注意：目前插件仍处于初步开发中，有部分功能不可用/出现问题，欢迎提交issue！！！
+
+## 插件已实现的功能
+
+- 登录后可保存并使用cookie保持登录状态
+- 自动连接ESJ国内站，避免无法访问的问题
+- 获取书籍详情、更新状态
+- 下载全本小说（epub/txt）
+- 打包小说为zip格式并使用密码加密发送给用户
+- 小说自选章节下载
+- epub格式支持自选嵌入封面插图
+- 插件输出状态的简详输出
+- 生成EPUB下载封面和插图时，自动识别/修正内嵌图片格式，降低因扩展名或响应头异常导致的阅读器兼容问题
+
+## 插件状况
+
+- [Bug] 当自选章节下载，且存在全本小说时，会直接输出全本小说
+- [ToDo] Dashboard/Webui待开发（目前属于不可用状态，请勿打开！）
+- [ToDo] 增加 Dashboard ZIP 下载按钮。
+- [ToDo] 增加 Dashboard 删除书籍二次确认。
+- [ToDo] 增加 Dashboard 日志查看。
+- [ToDo] 增加任务取消命令。
+- [ToDo] 增加更详细的任务进度提示。
+- [ToDo] 增强多平台文件发送兼容性。
 
 ## 功能
 
@@ -12,7 +38,6 @@ ESJZone 小说下载 AstrBot 插件。
 - `/esj logout` 清除当前用户登录态
 - `/esj db on|off|status` 管理 Dashboard
 - `/esj clear ...` 清理缓存/输出/书籍/Cookie
-- 生成 EPUB 时会下载封面和正文插图，并自动识别 / 修正内嵌图片格式，降低因扩展名或响应头异常导致的阅读器兼容问题。
 
 ## WebUI
 
@@ -233,27 +258,3 @@ python -m compileall astrbot_plugin_esjzone_downloader
 ### 代码生成说明
 
 本插件代码由 ChatGPT 5.5 辅助完成，并依据 AstrBot 插件开发文档和本项目规格书进行整理与实现。
-
----
-
-## To Do List
-
-- [√] 在真实 AstrBot 环境中完成插件加载测试。
-- [√] 实测 `/esj l` 自动登录流程。
-- [√] 实测 Cookie 校验和失效自动刷新。
-- [√] 实测 `/esj i` 小说信息解析。
-- [√] 实测 `/esj c` 最近章节解析。
-- [√] 实测 `/esj d` 全本 EPUB 下载。
-- [ ] 实测 `/esj d` TXT 下载。
-- [ ] 根据真实 ESJZone 页面结构微调解析器。
-- [√] 完善正文插图下载与 EPUB 图片资源写入。
-- [ ] 优化 EPUB XHTML 清理逻辑。
-- [ ] 增强失败章节补抓策略。
-- [ ] 增加任务取消命令。
-- [ ] 增加更详细的任务进度提示。
-- [ ] 完善 Dashboard 详情页。
-- [ ] 增加 Dashboard ZIP 下载按钮。
-- [ ] 增加 Dashboard 删除书籍二次确认。
-- [ ] 增加 Dashboard 日志查看。
-- [ ] 增加 WebUI 远程检查更新功能。
-- [ ] 增强多平台文件发送兼容性。

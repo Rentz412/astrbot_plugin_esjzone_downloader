@@ -1,3 +1,7 @@
+"""本地书库仓储服务。
+
+统一管理书籍元数据、章节缓存、导出文件、状态文件以及清理操作，避免文件路径逻辑散落在业务层。"""
+
 from __future__ import annotations
 
 import json
@@ -10,12 +14,15 @@ from .models import BookMetadata, ChapterContent, ChapterTask
 
 
 class EsjRepository:
+    """管理插件数据目录下的书籍缓存、状态和输出文件。"""
     def __init__(self, data_dir: Path):
+        """初始化对象依赖和运行时目录。"""
         self.data_dir = data_dir
         self.books_dir = data_dir / "books"
         self.books_dir.mkdir(parents=True, exist_ok=True)
 
     def book_dir(self, book_id: str) -> Path:
+        """返回指定书籍的本地根目录。"""
         path = self.books_dir / book_id
         path.mkdir(parents=True, exist_ok=True)
         for child in ("chapters", "outputs", "packages", "logs", "illustrations"):
@@ -23,18 +30,22 @@ class EsjRepository:
         return path
 
     def status_path(self, book_id: str) -> Path:
+        """返回指定书籍状态文件路径。"""
         return self.book_dir(book_id) / "status.json"
 
     def metadata_path(self, book_id: str) -> Path:
+        """返回指定书籍元数据文件路径。"""
         return self.book_dir(book_id) / "metadata.json"
 
     def load_status(self, book_id: str) -> dict | None:
+        """读取指定书籍的状态文件。"""
         path = self.status_path(book_id)
         if not path.exists():
             return None
         return json.loads(path.read_text(encoding="utf-8"))
 
     def save_metadata(self, metadata: BookMetadata) -> None:
+        """保存书籍元数据到本地 JSON。"""
         payload = {
             "book_id": metadata.book_id,
             "title": metadata.title,
@@ -60,6 +71,7 @@ class EsjRepository:
         has_cover: bool = False,
         illustration_count: int = 0,
     ) -> None:
+        """保存下载结果状态，供 Dashboard 和命令查询。"""
         existing = self.load_status(metadata.book_id) or {}
         formats = set(existing.get("downloaded_formats", []))
         formats.add(fmt)
@@ -89,13 +101,16 @@ class EsjRepository:
 
     @staticmethod
     def fingerprint(chapters: list[ChapterTask]) -> str:
+        """根据章节标题和 URL 生成列表指纹，用于判断目录变化。"""
         raw = "\n".join(f"{idx}|{c.title}|{c.url}" for idx, c in enumerate(chapters))
         return sha256(raw.encode("utf-8")).hexdigest()
 
     def chapter_cache_path(self, book_id: str, chapter: ChapterTask) -> Path:
+        """返回指定章节的缓存文件路径。"""
         return self.book_dir(book_id) / "chapters" / f"{chapter.index + 1:04d}_{chapter.chapter_id}.json"
 
     def save_chapter(self, book_id: str, content: ChapterContent) -> None:
+        """保存单章解析结果。"""
         payload = {
             "index": content.chapter.index,
             "chapter_id": content.chapter.chapter_id,
@@ -108,12 +123,14 @@ class EsjRepository:
         self.chapter_cache_path(book_id, content.chapter).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def load_chapters(self, book_id: str) -> list[dict]:
+        """按章节顺序加载本地章节缓存。"""
         rows = []
         for path in sorted((self.book_dir(book_id) / "chapters").glob("*.json")):
             rows.append(json.loads(path.read_text(encoding="utf-8")))
         return rows
 
     def clear_book_runtime(self, book_id: str) -> None:
+        """清理单本书运行时目录并重建空目录。"""
         root = self.book_dir(book_id)
         for name in ("chapters", "outputs", "packages", "illustrations"):
             target = root / name
@@ -122,6 +139,7 @@ class EsjRepository:
             target.mkdir(exist_ok=True)
 
     def list_books(self) -> list[dict]:
+        """列出所有已有状态文件的本地书籍。"""
         books = []
         for path in sorted(self.books_dir.iterdir()):
             if path.is_dir() and (path / "status.json").exists():
@@ -129,6 +147,7 @@ class EsjRepository:
         return books
 
     def clear_cache(self) -> int:
+        """清空所有书籍的章节缓存目录。"""
         count = 0
         for path in self.books_dir.glob("*/chapters"):
             shutil.rmtree(path, ignore_errors=True)
@@ -137,6 +156,7 @@ class EsjRepository:
         return count
 
     def clear_outputs(self) -> int:
+        """清空所有书籍的导出文件和压缩包目录。"""
         count = 0
         for pattern in ("*/outputs", "*/packages"):
             for path in self.books_dir.glob(pattern):
@@ -146,6 +166,7 @@ class EsjRepository:
         return count
 
     def clear_book(self, book_id: str) -> bool:
+        """删除指定书籍的全部本地数据。"""
         path = self.books_dir / book_id
         if path.exists():
             shutil.rmtree(path)

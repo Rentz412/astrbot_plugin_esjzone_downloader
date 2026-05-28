@@ -1,3 +1,7 @@
+"""图片下载与正文图片本地化服务。
+
+负责封面、章节插图的安全 URL 解析、格式识别、去重下载和 HTML 引用替换。"""
+
 from __future__ import annotations
 
 import hashlib
@@ -16,17 +20,21 @@ from .models import BookMetadata
 
 
 class ImageService:
+    """处理封面和章节插图下载、格式识别与正文引用替换。"""
     def __init__(self, client_factory: EsjHttpClient, config: Any = None, logger: Any = None):
+        """初始化对象依赖和运行时目录。"""
         self.client_factory = client_factory
         self.config = config or {}
         self.logger = logger
 
     def _allow_external_images(self) -> bool:
+        """读取是否允许下载站外图片的配置。"""
         download_cfg = self.config.get("download", {}) if hasattr(self.config, "get") else {}
         return bool(download_cfg.get("allow_external_images", True))
 
     @staticmethod
     def _ext_from_content_type(content_type: str, fallback_url: str = "") -> str:
+        """根据响应 Content-Type 或 URL 推断图片扩展名。"""
         mapping = {
             "image/jpeg": ".jpg",
             "image/jpg": ".jpg",
@@ -46,6 +54,7 @@ class ImageService:
 
     @staticmethod
     def _detect_ext_from_magic(data: bytes) -> tuple[str, str] | None:
+        """根据文件魔数识别常见图片格式。"""
         head = data[:32]
         stripped = data[:256].lstrip()
 
@@ -107,6 +116,7 @@ class ImageService:
 
     @staticmethod
     def _media_type_from_ext(ext: str, content_type: str = "") -> str:
+        """根据图片扩展名推断媒体类型。"""
         mapping = {
             ".jpg": "image/jpeg",
             ".jpeg": "image/jpeg",
@@ -124,6 +134,7 @@ class ImageService:
 
     @staticmethod
     def _media_type_from_path(path: Path, content_type: str = "") -> str:
+        """根据文件扩展名推断资源媒体类型。"""
         if content_type and content_type != "application/octet-stream":
             return content_type
         guessed, _ = mimetypes.guess_type(path.name)
@@ -131,6 +142,7 @@ class ImageService:
 
     @staticmethod
     def _safe_image_url(raw_url: str, base_url: str, allow_external: bool = False) -> str:
+        """将正文图片地址解析为安全可下载的绝对 URL。"""
         value = (raw_url or "").strip()
         if not value:
             return ""
@@ -151,10 +163,12 @@ class ImageService:
 
     @staticmethod
     def _image_filename(url: str, index: int, ext: str) -> str:
+        """按序号和 URL 哈希生成稳定的本地图片文件名。"""
         digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
         return f"{index:05d}_{digest}{ext}"
 
     async def download_cover(self, client: httpx.AsyncClient, metadata: BookMetadata, book_dir: Path) -> tuple[Path | None, int]:
+        """下载封面图并更新书籍元数据中的本地路径。"""
         if not metadata.cover_url:
             return None, 0
 
@@ -191,6 +205,7 @@ class ImageService:
         chapters: list[dict],
         book_dir: Path,
     ) -> tuple[list[dict], list[dict], int]:
+        """下载章节内图片并把 HTML 引用替换为本地相对路径。"""
         illustrations_dir = book_dir / "illustrations"
         illustrations_dir.mkdir(parents=True, exist_ok=True)
 
@@ -200,6 +215,7 @@ class ImageService:
         allow_external = self._allow_external_images()
 
         async def ensure_image(url: str, referer: str) -> dict | None:
+            """下载并缓存单张章节图片，重复 URL 直接复用。"""
             nonlocal failed_images
             if url in image_map:
                 return image_map[url]

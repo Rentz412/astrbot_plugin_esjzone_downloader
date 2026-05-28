@@ -1,3 +1,7 @@
+"""TXT 导出模块。
+
+将章节缓存合并为便于阅读和备份的纯文本文件。"""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -6,7 +10,9 @@ from .models import BookMetadata
 
 
 class TxtExporter:
+    """将缓存章节导出为纯文本文件。"""
     def export(self, book_dir: Path, metadata: BookMetadata, chapters: list[dict]) -> Path:
+        """将章节缓存导出为目标文件。"""
         output = book_dir / "outputs" / f"{metadata.safe_title}.txt"
         lines = [
             metadata.title,

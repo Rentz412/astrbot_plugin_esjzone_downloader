@@ -1,3 +1,7 @@
+"""EPUB 导出模块。
+
+将已缓存的章节正文、封面和插图组装为标准 EPUB 文件，供下载完成后打包发送。"""
+
 from __future__ import annotations
 
 from html import escape
@@ -10,8 +14,11 @@ from .models import BookMetadata
 
 
 class EpubExporter:
+    """将缓存章节和媒体资源导出为 EPUB 文件。"""
+
     @staticmethod
     def _clean_chapter_html(html: str) -> str:
+        """清理章节 HTML，移除不适合 EPUB 的标签和属性。"""
         if not html:
             return ""
         soup = BeautifulSoup(html, "lxml")
@@ -37,6 +44,7 @@ class EpubExporter:
 
     @staticmethod
     def _media_type_from_path(path: Path) -> str:
+        """根据文件扩展名推断资源媒体类型。"""
         suffix = path.suffix.lower()
         if suffix in {".jpg", ".jpeg"}:
             return "image/jpeg"
@@ -60,6 +68,7 @@ class EpubExporter:
         cover_path: Path | None = None,
         image_items: list[dict] | None = None,
     ) -> Path:
+        """将章节缓存导出为目标文件。"""
         output = book_dir / "outputs" / f"{metadata.safe_title}.epub"
         output.parent.mkdir(parents=True, exist_ok=True)
 

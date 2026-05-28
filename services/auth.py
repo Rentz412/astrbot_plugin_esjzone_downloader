@@ -1,3 +1,7 @@
+"""ESJZone 登录态管理服务。
+
+封装账号密码登录、Cookie 校验/刷新、用户登录态加密落盘以及认证调试信息输出，避免入口命令层直接处理敏感凭据。"""
+
 from __future__ import annotations
 
 import hashlib
@@ -31,7 +35,9 @@ ALLOWED_COOKIE_DOMAINS = {
 
 
 class EsjAuthService:
+    """管理 ESJZone 账号登录、Cookie 校验和本地加密凭据。"""
     def __init__(self, data_dir: Path, config: Any, logger: Any = None):
+        """初始化对象依赖和运行时目录。"""
         self.data_dir = data_dir
         self.auth_dir = data_dir / "auth"
         self.users_dir = self.auth_dir / "users"
@@ -42,6 +48,7 @@ class EsjAuthService:
         self.fernet = Fernet(self._load_or_create_key())
 
     def _load_or_create_key(self) -> bytes:
+        """读取或创建 Fernet 密钥，用于加密本地敏感信息。"""
         self.auth_dir.mkdir(parents=True, exist_ok=True)
         if self.secret_path.exists():
             return self.secret_path.read_bytes()
@@ -50,13 +57,16 @@ class EsjAuthService:
         return key
 
     def _encrypt(self, value: str) -> str:
+        """加密需要落盘保存的敏感字符串。"""
         return self.fernet.encrypt(value.encode("utf-8")).decode("utf-8")
 
     def _decrypt(self, value: str) -> str:
+        """解密本地保存的敏感字符串。"""
         return self.fernet.decrypt(value.encode("utf-8")).decode("utf-8")
 
     @staticmethod
     def mask_email(email: str) -> str:
+        """对邮箱进行脱敏展示，避免日志或回复泄露账号。"""
         if "@" not in email:
             return email[:2] + "***"
         name, domain = email.split("@", 1)
@@ -64,6 +74,7 @@ class EsjAuthService:
 
     @staticmethod
     def user_hash_from_event(event) -> tuple[str, str, str]:
+        """根据平台和发送者生成稳定的匿名用户标识。"""
         platform_id = ""
         sender_id = ""
         for attr in ("get_platform_id", "get_platform_name"):
@@ -79,31 +90,38 @@ class EsjAuthService:
         return hashlib.sha256(raw.encode("utf-8")).hexdigest(), platform_id, sender_id
 
     def _user_file(self, user_hash: str) -> Path:
+        """返回指定用户登录态文件路径。"""
         return self.users_dir / f"{user_hash}.json"
 
     def _debug_cfg(self) -> dict[str, Any]:
+        """读取调试配置。"""
         cfg = self.config.get("debug", {}) if hasattr(self.config, "get") else {}
         return cfg if isinstance(cfg, dict) else {}
 
     def _debug_enabled(self) -> bool:
+        """判断调试输出是否启用。"""
         return bool(self._debug_cfg().get("enabled", False))
 
     def _debug_dir(self) -> Path:
+        """创建并返回调试文件目录。"""
         path = self.data_dir / "debug" / "auth"
         path.mkdir(parents=True, exist_ok=True)
         return path
 
     def _debug_log(self, message: str) -> None:
+        """按配置输出调试日志。"""
         if self._debug_enabled() and self.logger:
             self.logger.info(f"[esj.debug][auth] {message}")
 
     def _debug_write_text(self, filename: str, text: str) -> None:
+        """按配置保存调试文本。"""
         cfg = self._debug_cfg()
         if not cfg.get("enabled", False) or not cfg.get("save_auth_pages", True):
             return
         (self._debug_dir() / filename).write_text(text, encoding="utf-8", errors="replace")
 
     def _debug_write_json(self, filename: str, payload: dict[str, Any]) -> None:
+        """按配置保存结构化调试信息。"""
         cfg = self._debug_cfg()
         if not cfg.get("enabled", False):
             return
@@ -111,11 +129,13 @@ class EsjAuthService:
 
     @staticmethod
     def _mask(value: str) -> str:
+        """对 Cookie、Token 等敏感片段进行脱敏。"""
         if not value:
             return ""
         return f"{value[:10]}...{value[-6:]}" if len(value) > 20 else "***"
 
     def _cookie_summary_from_rows(self, rows: list[dict[str, Any]]) -> dict[str, Any]:
+        """汇总 Cookie 条目，便于调试时确认关键字段是否存在。"""
         keys = {"ews_key", "ews_token", "ws_last", "ws_last_visit_code", "ws_last_visit_post"}
         return {
             "count": len(rows),
@@ -128,6 +148,7 @@ class EsjAuthService:
 
     @staticmethod
     def _cookie_header_from_rows(rows: list[dict[str, Any]]) -> str:
+        """将 Cookie 条目拼接为 HTTP Cookie 请求头。"""
         parts: list[str] = []
         for row in rows:
             name = str((row or {}).get("name", "")).strip()
@@ -138,6 +159,7 @@ class EsjAuthService:
 
     @staticmethod
     def _cookie_header_from_client(client: httpx.AsyncClient) -> str:
+        """从 httpx 客户端 CookieJar 构造 Cookie 请求头。"""
         parts = []
         for cookie in client.cookies.jar:
             # 这里不能过滤得太死。ESJZone 有时会下发 host-only cookie，
@@ -152,6 +174,7 @@ class EsjAuthService:
 
     @staticmethod
     def _cookie_jar_dump(client: httpx.AsyncClient) -> list[dict[str, Any]]:
+        """将客户端 CookieJar 转为可序列化结构用于保存或调试。"""
         rows: list[dict[str, Any]] = []
         now = time.time()
         for cookie in client.cookies.jar:
@@ -170,6 +193,7 @@ class EsjAuthService:
         return rows
 
     async def fetch_login_authorization_token(self, client: httpx.AsyncClient) -> str:
+        """从登录页提取站点要求的 authorization token。"""
         response = await client.post(
             AUTH_TOKEN_URL,
             data={"plxf": "getAuthToken"},
@@ -188,6 +212,7 @@ class EsjAuthService:
         return match.group(1).strip()
 
     async def login(self, email: str, password: str) -> AuthResult:
+        """执行账号密码登录并返回 Cookie 与用户名。"""
         headers = {
             "User-Agent": self.config.get("download", {}).get("user_agent", "Mozilla/5.0"),
             "Accept-Language": "zh-CN,zh;q=0.9",
@@ -261,6 +286,7 @@ class EsjAuthService:
             )
 
     async def validate_cookie(self, cookie: str) -> CookieValidationResult:
+        """用个人资料页校验 Cookie 是否仍然有效。"""
         headers = {"User-Agent": self.config.get("download", {}).get("user_agent", "Mozilla/5.0")}
         cookies = httpx.Cookies()
         for part in (cookie or "").split(";"):
@@ -277,6 +303,7 @@ class EsjAuthService:
             return await self.validate_client_cookie(client)
 
     async def validate_client_cookie(self, client: httpx.AsyncClient) -> CookieValidationResult:
+        """校验指定客户端中已有 Cookie 的有效性。"""
         try:
             response = await client.get(PROFILE_URL, headers={"Referer": BASE_URL + "/"})
             response.raise_for_status()
@@ -332,6 +359,7 @@ class EsjAuthService:
         return CookieValidationResult(False, reason="无法识别个人资料页登录态")
 
     async def save_user_auth(self, event, email: str, password: str, result: AuthResult) -> None:
+        """加密保存用户账号、密码和 Cookie。"""
         user_hash, platform_id, _sender_id = self.user_hash_from_event(event)
         cookie_from_jar = self._cookie_header_from_rows(result.cookie_jar)
         cookie_header = cookie_from_jar if len(cookie_from_jar) > len(result.cookie_header or "") else result.cookie_header
@@ -362,6 +390,7 @@ class EsjAuthService:
         self._user_file(user_hash).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     async def refresh_cookie(self, user_hash: str) -> AuthResult:
+        """使用保存的账号密码刷新指定用户 Cookie。"""
         path = self._user_file(user_hash)
         if not path.exists():
             return AuthResult(False, reason="未找到用户认证文件")
@@ -380,6 +409,7 @@ class EsjAuthService:
         return result
 
     async def get_auth_context(self, event) -> AuthContext | None:
+        """获取当前事件对应用户的认证上下文，必要时自动刷新。"""
         user_hash, platform_id, sender_id = self.user_hash_from_event(event)
         path = self._user_file(user_hash)
         if not path.exists():
@@ -451,12 +481,14 @@ class EsjAuthService:
         )
 
     async def require_auth_or_reply(self, event) -> AuthContext | None:
+        """命令执行前读取认证上下文；未登录时返回 None。"""
         auth = await self.get_auth_context(event)
         if auth:
             return auth
         return None
 
     async def logout_user(self, event) -> bool:
+        """删除当前事件对应用户的登录态。"""
         user_hash, _, _ = self.user_hash_from_event(event)
         path = self._user_file(user_hash)
         if path.exists():
@@ -465,6 +497,7 @@ class EsjAuthService:
         return False
 
     async def logout_all(self) -> int:
+        """清空所有已保存的用户登录态。"""
         count = 0
         for path in self.users_dir.glob("*.json"):
             path.unlink()

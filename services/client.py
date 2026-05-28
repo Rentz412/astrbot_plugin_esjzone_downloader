@@ -1,3 +1,7 @@
+"""ESJZone HTTP 客户端工厂。
+
+集中管理请求头、Cookie 注入、URL 合法性校验和 HTTP 错误处理，便于后续适配站点域名或反爬策略变化。"""
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -11,7 +15,9 @@ ALLOWED_ESJ_HOSTS = {"www.esjzone.one", "www.esjzone.cc"}
 
 
 class EsjHttpClient:
+    """创建带统一请求头和认证 Cookie 的 httpx 异步客户端。"""
     def __init__(self, config: Mapping):
+        """初始化对象依赖和运行时目录。"""
         download = config.get("download", {}) if isinstance(config, Mapping) else {}
         proxy = config.get("proxy", {}) if isinstance(config, Mapping) else {}
         self.user_agent = download.get("user_agent") or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125 Safari/537.36"
@@ -20,6 +26,7 @@ class EsjHttpClient:
         self.last_response_info: dict[str, object] = {}
 
     def build_headers(self, referer: str = "https://www.esjzone.one/") -> dict[str, str]:
+        """生成访问 ESJZone 时使用的统一请求头。"""
         return {
             "User-Agent": self.user_agent,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -29,6 +36,7 @@ class EsjHttpClient:
         }
 
     def _build_cookies(self, auth: AuthContext | None) -> httpx.Cookies | None:
+        """根据认证上下文构造 httpx Cookie 容器。"""
         if not auth:
             return None
         cookies = httpx.Cookies()
@@ -49,6 +57,7 @@ class EsjHttpClient:
         return cookies if len(cookies) > 0 else None
 
     def build_client(self, auth: AuthContext | None = None) -> httpx.AsyncClient:
+        """创建配置好超时、重定向、请求头和 Cookie 的异步客户端。"""
         headers = self.build_headers()
         if auth and auth.cookie:
             # 双保险：
@@ -69,6 +78,7 @@ class EsjHttpClient:
 
     @staticmethod
     def validate_esj_url(url: str) -> None:
+        """限制请求目标为 ESJZone 允许域名，避免 SSRF 风险。"""
         parsed = urlparse(url)
         if parsed.scheme != "https":
             raise ValueError("只允许 HTTPS")
@@ -78,6 +88,7 @@ class EsjHttpClient:
             raise ValueError("URL 不允许包含用户名或密码")
 
     async def get_text(self, client: httpx.AsyncClient, url: str, referer: str = "https://www.esjzone.one/") -> str:
+        """发送 GET 请求并返回文本内容。"""
         self.validate_esj_url(url)
         response = await client.get(url, headers=self.build_headers(referer))
         response.raise_for_status()
@@ -100,6 +111,7 @@ class EsjHttpClient:
         referer: str = "https://www.esjzone.one/",
         allow_external: bool = False,
     ) -> tuple[bytes, str]:
+        """发送 GET 请求并返回二进制内容和响应类型。"""
         if allow_external:
             parsed = urlparse(url)
             if parsed.scheme not in {"https", "http"} or parsed.username or parsed.password:
