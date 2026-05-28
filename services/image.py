@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import mimetypes
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
+from PIL import Image, UnidentifiedImageError
 
 from .client import ALLOWED_ESJ_HOSTS, EsjHttpClient
 from .models import BookMetadata
@@ -43,8 +45,86 @@ class ImageService:
         return ".jpg" if guessed == ".jpe" else (guessed or ".bin")
 
     @staticmethod
-    def _media_type_from_path(path: Path, content_type: str = "") -> str:
+    def _detect_ext_from_magic(data: bytes) -> tuple[str, str] | None:
+        head = data[:32]
+        stripped = data[:256].lstrip()
+
+        if head.startswith(b"\xff\xd8\xff"):
+            return ".jpg", "image/jpeg"
+        if head.startswith(b"\x89PNG\r\n\x1a\n"):
+            return ".png", "image/png"
+        if head.startswith((b"GIF87a", b"GIF89a")):
+            return ".gif", "image/gif"
+        if len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+            return ".webp", "image/webp"
+        if b"ftypavif" in head or b"ftypavis" in head:
+            return ".avif", "image/avif"
+        if stripped.startswith(b"<svg") or b"<svg" in stripped[:128]:
+            return ".svg", "image/svg+xml"
+        return None
+
+    @staticmethod
+    def _normalize_image_data(data: bytes, content_type: str, fallback_url: str = "") -> tuple[bytes, str, str]:
+        """
+        规范化图片数据、扩展名和 media type。
+
+        很多图床会返回 application/octet-stream 或空 Content-Type，导致旧逻辑保存为 .bin。
+        这里优先按文件头判断真实格式；如果仍无法判断，再尝试用 Pillow 识别。
+        Pillow 能识别但 EPUB 兼容性不稳的未知格式会转成 PNG。
+        """
+        magic = ImageService._detect_ext_from_magic(data)
+        if magic:
+            ext, media_type = magic
+            return data, ext, media_type
+
+        ext = ImageService._ext_from_content_type(content_type, fallback_url)
+        if ext != ".bin":
+            media_type = ImageService._media_type_from_ext(ext, content_type)
+            return data, ext, media_type
+
+        try:
+            with Image.open(BytesIO(data)) as image:
+                fmt = (image.format or "").upper()
+                format_map = {
+                    "JPEG": (".jpg", "image/jpeg"),
+                    "JPG": (".jpg", "image/jpeg"),
+                    "PNG": (".png", "image/png"),
+                    "GIF": (".gif", "image/gif"),
+                    "WEBP": (".webp", "image/webp"),
+                    "AVIF": (".avif", "image/avif"),
+                }
+                if fmt in format_map:
+                    detected_ext, detected_media = format_map[fmt]
+                    return data, detected_ext, detected_media
+
+                # Pillow 识别到了图片，但格式不适合直接嵌入 EPUB，则转 PNG。
+                output = BytesIO()
+                converted = image.convert("RGBA") if image.mode in {"P", "LA", "RGBA"} else image.convert("RGB")
+                converted.save(output, format="PNG")
+                return output.getvalue(), ".png", "image/png"
+        except (UnidentifiedImageError, OSError, ValueError):
+            return data, ".bin", "application/octet-stream"
+
+    @staticmethod
+    def _media_type_from_ext(ext: str, content_type: str = "") -> str:
+        mapping = {
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".png": "image/png",
+            ".gif": "image/gif",
+            ".webp": "image/webp",
+            ".svg": "image/svg+xml",
+            ".avif": "image/avif",
+        }
+        if ext in mapping:
+            return mapping[ext]
         if content_type:
+            return content_type
+        return "application/octet-stream"
+
+    @staticmethod
+    def _media_type_from_path(path: Path, content_type: str = "") -> str:
+        if content_type and content_type != "application/octet-stream":
             return content_type
         guessed, _ = mimetypes.guess_type(path.name)
         return guessed or "application/octet-stream"
@@ -70,9 +150,8 @@ class ImageService:
         return absolute
 
     @staticmethod
-    def _image_filename(url: str, index: int, content_type: str = "") -> str:
+    def _image_filename(url: str, index: int, ext: str) -> str:
         digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
-        ext = ImageService._ext_from_content_type(content_type, url)
         return f"{index:05d}_{digest}{ext}"
 
     async def download_cover(self, client: httpx.AsyncClient, metadata: BookMetadata, book_dir: Path) -> tuple[Path | None, int]:
@@ -94,7 +173,9 @@ class ImageService:
                 referer=metadata.detail_url,
                 allow_external=self._allow_external_images(),
             )
-            ext = self._ext_from_content_type(content_type, cover_url)
+            data, ext, _media_type = self._normalize_image_data(data, content_type, cover_url)
+            if ext == ".bin":
+                raise ValueError("封面不是可识别图片格式")
             cover_path = book_dir / f"cover{ext}"
             cover_path.write_bytes(data)
             return cover_path, 0
@@ -130,14 +211,18 @@ class ImageService:
                     referer=referer,
                     allow_external=allow_external,
                 )
-                filename = self._image_filename(url, len(image_items) + 1, content_type)
+                data, ext, media_type = self._normalize_image_data(data, content_type, url)
+                if ext == ".bin":
+                    raise ValueError("不是可识别图片格式")
+
+                filename = self._image_filename(url, len(image_items) + 1, ext)
                 file_path = illustrations_dir / filename
                 file_path.write_bytes(data)
                 item = {
                     "url": url,
                     "path": str(file_path),
                     "epub_href": f"images/{filename}",
-                    "media_type": self._media_type_from_path(file_path, content_type),
+                    "media_type": media_type,
                     "size": len(data),
                 }
                 image_map[url] = item
