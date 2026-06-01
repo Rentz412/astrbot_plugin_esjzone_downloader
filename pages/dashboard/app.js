@@ -371,9 +371,9 @@ function confirmAction(title, message, callback) {
   confirmCallback = callback;
   confirmDialog.setAttribute('aria-hidden', 'false');
   $('#acceptConfirmBtn').onclick = async () => {
+    const callback = confirmCallback;
     hideConfirm();
-    if (confirmCallback) await confirmCallback();
-    confirmCallback = null;
+    if (callback) await callback();
   };
 }
 
