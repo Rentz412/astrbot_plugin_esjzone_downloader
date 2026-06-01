@@ -2,7 +2,7 @@
 # ESJ Zone 小说下载插件
 
 一个用于 AstrBot 的 ESJZone 小说下载插件。
-本插件用于在 AstrBot 中通过聊天命令下载 ESJZone 小说，支持用户独立登录、自动 Cookie 校验、EPUB / TXT 导出、本地书库缓存、ZIP 打包发送和可选 Dashboard 管理页面。、
+本插件用于在 AstrBot 中通过聊天命令下载 ESJZone 小说，支持用户独立登录、自动 Cookie 校验、EPUB / TXT 导出、本地书库缓存和 ZIP 打包发送。、
 
 ！！！注意：目前插件仍处于初步开发中，有部分功能不可用/出现问题，欢迎提交issue！！！
 
@@ -21,13 +21,10 @@
 ## 插件状况
 
 - ~~[Bug] 当自选章节下载，且存在全本小说时，会直接输出全本小说~~（v1.1.0 已修复）
-- [ToDo] Dashboard待开发（目前属于不可用状态，请勿打开！）
+- [ToDo] Dashboard (AstrBot Pages) 待开发
 - [ToDo] 增加 Dashboard ZIP 下载按钮。
 - [ToDo] 增加 Dashboard 删除书籍二次确认。
 - [ToDo] 增加 Dashboard 日志查看。
-- [ToDo] 增加任务取消命令。
-- [ToDo] 增加更详细的任务进度提示。
-- [ToDo] 增强多平台文件发送兼容性。
 
 ## 功能
 
@@ -37,16 +34,7 @@
 - `/esj c <编号或URL>` 查看最近更新
 - `/esj d <编号或URL> [epub|txt] [起始章节] [结束章节]` 下载并打包
 - `/esj logout` 清除当前用户登录态
-- `/esj db on|off|status` 管理 Dashboard
 - `/esj clear ...` 清理缓存/输出/书籍/Cookie
-
-## WebUI
-
-默认端口为 `8989`，访问提示必须包含端口，例如：
-
-```text
-http://127.0.0.1:8989/
-```
 
 ## 插件配置项
 
@@ -117,29 +105,6 @@ data/plugin_data/astrbot_plugin_esjzone_downloader/debug/
 
 - 调试文件可能包含敏感登录态信息，仅建议开发排查时开启。
 - 排查完成后建议关闭调试模式，并按需删除 `debug` 目录。
-
----
-
-### Dashboard 配置 `dashboard`
-
-| 配置项 | 类型 | 默认值 | 说明 |
-|---|---|---:|---|
-| `enabled` | bool | `false` | 是否启用 Dashboard / WebUI。默认关闭以减少资源占用 |
-| `host` | string | `127.0.0.1` | WebUI 监听地址。仅本机访问保持默认值；需要局域网访问可设为 `0.0.0.0` |
-| `port` | int | `8989` | WebUI 访问端口，访问地址必须包含端口 |
-| `public_base_url` | string | 空 | WebUI 对外访问基础地址。反向代理或公网部署时填写，例如 `https://example.com:8443` |
-| `auth_enabled` | bool | `true` | 是否启用 Dashboard Token 验证 |
-| `token` | string | 空 | Dashboard 访问 Token。为空时插件首次启动会自动生成 |
-
-说明：
-
-- Dashboard 默认关闭，可通过 AstrBot 配置项启用，也可通过管理员命令 `/esj db on` 开启。
-- 可通过 `/esj db off` 关闭 Dashboard，通过 `/esj db status` 查看当前状态、访问地址和 Token 配置状态。
-- `host` 为 `127.0.0.1` 时通常只能本机访问；如果部署在服务器上并需要从其他设备访问，可设置为 `0.0.0.0`，同时务必启用 Token 验证。
-- `port` 默认 `8989`，访问时必须使用带端口地址，例如 `http://127.0.0.1:8989/`。
-- `public_base_url` 可选。为空时插件会按 `host` 和 `port` 生成访问提示；使用反向代理、HTTPS、公网域名或端口映射时，建议填写最终对外访问地址。
-- `auth_enabled` 默认开启。公网、局域网共享或反向代理环境强烈建议保持开启。
-- `token` 为空时插件首次启动会自动生成；公网环境请手动设置足够长、不可猜测的强随机 Token。
 
 ---
 

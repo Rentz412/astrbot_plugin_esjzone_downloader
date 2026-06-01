@@ -1,5 +1,13 @@
 # 更新日志
 
+## v1.3.0 - 2026-06-01
+
+### 调整
+
+- 移除旧的独立 WebUI / Dashboard 配置、启动关闭命令和前端页面遗留物。
+- 删除 `/esj db on|off|status` 命令及相关 host、port、token 配置。
+- 为后续基于 AstrBot Plugin Pages 重新开发 Dashboard 做准备。
+
 ## v1.2.0 - 2026-06-01
 
 ### 修复

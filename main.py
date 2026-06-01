@@ -1,10 +1,9 @@
 """AstrBot 插件入口模块。
 
-负责初始化 ESJZone 下载器的核心服务、注册聊天命令与 Dashboard API，并将用户请求路由到认证、下载、仓储等服务层。"""
+负责初始化 ESJZone 下载器的核心服务、注册聊天命令，并将用户请求路由到认证、下载、仓储等服务层。"""
 
 from __future__ import annotations
 
-import secrets
 from pathlib import Path
 from typing import Any
 
@@ -25,11 +24,11 @@ PLUGIN_NAME = "astrbot_plugin_esjzone_downloader"
 @register(
     PLUGIN_NAME,
     "Rentz",
-    "ESJZone 小说下载器，支持登录、EPUB/TXT 导出、ZIP 打包和 Dashboard 管理。",
-    "1.2.0",
+    "ESJZone 小说下载器，支持登录、EPUB/TXT 导出和 ZIP 打包。",
+    "1.3.0",
 )
 class EsjZoneDownloaderPlugin(Star):
-    """AstrBot 插件主类，负责连接聊天命令、Web API 与底层下载服务。"""
+    """AstrBot 插件主类，负责连接聊天命令与底层下载服务。"""
     def __init__(self, context: Context, config: AstrBotConfig):
         """初始化对象依赖和运行时目录。"""
         super().__init__(context)
@@ -44,18 +43,8 @@ class EsjZoneDownloaderPlugin(Star):
         self.repository = EsjRepository(self.data_dir)
         self.task_manager = TaskManager()
 
-        self._register_web_apis()
-
     def _ensure_config_defaults(self) -> None:
         """补齐缺省配置，避免旧配置缺字段导致运行时报错。"""
-        self.config.setdefault("dashboard", {})
-        dash = self.config["dashboard"]
-        dash.setdefault("enabled", False)
-        dash.setdefault("host", "127.0.0.1")
-        dash.setdefault("port", 8989)
-        dash.setdefault("public_base_url", "")
-        dash.setdefault("auth_enabled", True)
-
         self.config.setdefault("download", {})
         self.config["download"].setdefault("allow_external_images", True)
 
@@ -71,24 +60,6 @@ class EsjZoneDownloaderPlugin(Star):
         dbg.setdefault("save_pages", True)
         dbg.setdefault("save_auth_pages", True)
         dbg.setdefault("save_chapter_pages", False)
-
-        if not dash.get("token"):
-            dash["token"] = secrets.token_urlsafe(24)
-            try:
-                self.config.save_config()
-            except Exception:
-                logger.warning("Dashboard token 已生成，但配置保存失败。")
-
-    def _webui_url(self) -> str:
-        """根据 Dashboard 配置生成对用户展示的访问地址。"""
-        dash = self.config.get("dashboard", {})
-        public_base_url = (dash.get("public_base_url") or "").rstrip("/")
-        if public_base_url:
-            return public_base_url + "/"
-        host = dash.get("host") or "127.0.0.1"
-        port = int(dash.get("port") or 8989)
-        display_host = "127.0.0.1" if host == "0.0.0.0" else host
-        return f"http://{display_host}:{port}/"
 
     def _message_cfg(self) -> dict[str, Any]:
         """读取消息回复相关配置，并兼容非字典配置。"""
@@ -137,70 +108,6 @@ class EsjZoneDownloaderPlugin(Star):
             )
         return f"下载完成，正在发送文件。ZIP 密码：{result.password}"
 
-    def _register_web_apis(self) -> None:
-        """向 AstrBot 注册 Dashboard 所需的后端 API。"""
-        try:
-            self.context.register_web_api(f"/{PLUGIN_NAME}/books", self.api_books, ["GET"], "List local books")
-            self.context.register_web_api(f"/{PLUGIN_NAME}/books/detail", self.api_book_detail, ["GET"], "Book detail")
-            self.context.register_web_api(f"/{PLUGIN_NAME}/books/delete", self.api_book_delete, ["POST"], "Delete book")
-            self.context.register_web_api(f"/{PLUGIN_NAME}/files/download", self.api_file_download, ["GET"], "Download file")
-            self.context.register_web_api(f"/{PLUGIN_NAME}/auth/token/check", self.api_token_check, ["POST"], "Check token")
-        except Exception as exc:
-            logger.warning(f"注册 Web API 失败，可能当前 AstrBot 版本不支持 Pages API: {exc}")
-
-    def _dashboard_enabled(self) -> bool:
-        """判断 Dashboard 功能是否启用。"""
-        return bool(self.config.get("dashboard", {}).get("enabled", False))
-
-    def _check_token(self, request: Any) -> bool:
-        """校验 Dashboard API 请求携带的访问 Token。"""
-        dash = self.config.get("dashboard", {})
-        if not dash.get("auth_enabled", True):
-            return True
-        configured = dash.get("token") or ""
-        token = ""
-        try:
-            token = request.headers.get("X-ESJ-Token") or request.args.get("token") or ""
-        except Exception:
-            token = ""
-        return bool(configured) and secrets.compare_digest(str(token), str(configured))
-
-    async def api_books(self, request):
-        """返回本地书库列表。"""
-        if not self._dashboard_enabled():
-            return {"ok": False, "error": "dashboard disabled"}
-        if not self._check_token(request):
-            return {"ok": False, "error": "unauthorized"}
-        return {"ok": True, "books": self.repository.list_books()}
-
-    async def api_book_detail(self, request):
-        """返回指定书籍的本地状态详情。"""
-        if not self._dashboard_enabled():
-            return {"ok": False, "error": "dashboard disabled"}
-        if not self._check_token(request):
-            return {"ok": False, "error": "unauthorized"}
-        book_id = request.args.get("book_id", "")
-        status = self.repository.load_status(book_id)
-        return {"ok": bool(status), "book": status}
-
-    async def api_book_delete(self, request):
-        """删除指定书籍的本地缓存和输出。"""
-        if not self._dashboard_enabled():
-            return {"ok": False, "error": "dashboard disabled"}
-        if not self._check_token(request):
-            return {"ok": False, "error": "unauthorized"}
-        data = await request.json()
-        book_id = str(data.get("book_id", ""))
-        return {"ok": self.repository.clear_book(book_id)}
-
-    async def api_file_download(self, request):
-        """预留文件下载接口，等待适配 AstrBot 响应对象。"""
-        return {"ok": False, "error": "文件下载 API 需按 AstrBot 当前版本的响应对象适配。"}
-
-    async def api_token_check(self, request):
-        """供前端检查当前 Token 是否有效。"""
-        return {"ok": self._check_token(request)}
-
     @filter.command_group("esj")
     def esj(self):
         """ESJZone 下载器命令组。"""
@@ -216,7 +123,6 @@ class EsjZoneDownloaderPlugin(Star):
             "/esj d <编号或规范URL> [epub|txt] [起始章节] [结束章节]\n"
             "/esj l <邮箱> <密码>    私聊登录并保存 Cookie\n"
             "/esj logout             私聊清除当前用户 Cookie\n"
-            "/esj db on|off|status   管理员开启、关闭或查看 Dashboard\n"
             "/esj clear cache|outputs|book <id>\n\n"
             "示例：\n"
             "/esj i 114514\n"
@@ -369,7 +275,7 @@ class EsjZoneDownloaderPlugin(Star):
                         f"ZIP 文件发送失败：{send_exc}\n"
                         f"ZIP：{result.package_path}\n"
                         f"ZIP 密码：{result.password}\n"
-                        f"WebUI：{self._webui_url()}"
+                        "请联系管理员在 AstrBot 数据目录中查看导出文件。"
                     )
                 else:
                     text = "文件发送失败，请私聊机器人或联系管理员查看。"
@@ -387,41 +293,6 @@ class EsjZoneDownloaderPlugin(Star):
             yield event.plain_result(f"下载失败：{exc}")
         finally:
             self.task_manager.leave_session(session_key)
-
-    @esj.command("db", alias={"dashboard"})
-    async def esj_dashboard(self, event: AstrMessageEvent, action: str = "status"):
-        """管理员开启、关闭或查看 Dashboard 状态。"""
-        if not self._is_admin(event):
-            yield event.plain_result("无权限操作 Dashboard。")
-            return
-
-        action = (action or "status").lower()
-        dash = self.config.setdefault("dashboard", {})
-        if action == "on":
-            dash["enabled"] = True
-            self.config.save_config()
-            yield event.plain_result(
-                "Dashboard 已开启。\n"
-                f"WebUI 访问地址：{self._webui_url()}\n"
-                "也可在 AstrBot 插件 Pages 中打开 dashboard 页面查看本地书库。\n"
-                f"当前 Token 验证：{'已启用' if dash.get('auth_enabled', True) else '未启用'}。"
-            )
-            return
-        if action == "off":
-            dash["enabled"] = False
-            self.config.save_config()
-            yield event.plain_result("Dashboard 已关闭。\nWebUI 只显示未启用提示，高风险 API 将拒绝访问。")
-            return
-
-        yield event.plain_result(
-            "Dashboard 状态：\n"
-            f"启用：{'是' if dash.get('enabled') else '否'}\n"
-            f"监听地址：{dash.get('host', '127.0.0.1')}\n"
-            f"访问端口：{dash.get('port', 8989)}\n"
-            f"WebUI 访问地址：{self._webui_url()}\n"
-            f"Token 验证：{'是' if dash.get('auth_enabled', True) else '否'}\n"
-            f"Token：{'已设置' if dash.get('token') else '未设置'}"
-        )
 
     @esj.command("clear")
     async def esj_clear(self, event: AstrMessageEvent, target: str = "", book_id: str = ""):
