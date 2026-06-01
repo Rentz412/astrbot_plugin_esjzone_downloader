@@ -67,9 +67,10 @@ class EpubExporter:
         chapters: list[dict],
         cover_path: Path | None = None,
         image_items: list[dict] | None = None,
+        output: Path | None = None,
     ) -> Path:
         """将章节缓存导出为目标文件。"""
-        output = book_dir / "outputs" / f"{metadata.safe_title}.epub"
+        output = output or book_dir / "outputs" / f"{metadata.safe_title}.epub"
         output.parent.mkdir(parents=True, exist_ok=True)
 
         book = epub.EpubBook()

@@ -9,6 +9,7 @@ import shutil
 import time
 from hashlib import sha256
 from pathlib import Path
+from typing import Any
 
 from .models import BookMetadata, ChapterContent, ChapterTask
 
@@ -127,6 +128,121 @@ class EsjRepository:
         rows = []
         for path in sorted((self.book_dir(book_id) / "chapters").glob("*.json")):
             rows.append(json.loads(path.read_text(encoding="utf-8")))
+        return rows
+
+    @staticmethod
+    def export_range_label(total: int, start: int = 0, end: int = 0) -> str:
+        """根据用户请求生成稳定的导出范围标签。"""
+        if total <= 0:
+            return "empty"
+        start_no = max(start or 1, 1)
+        end_no = total if not end else min(end, total)
+        if start_no == 1 and end_no == total:
+            return "full"
+        return f"{start_no:04d}-{end_no:04d}"
+
+    @staticmethod
+    def export_range_info(total: int, start: int = 0, end: int = 0) -> dict[str, int | str]:
+        """返回标准化后的范围信息，供 manifest 和状态记录使用。"""
+        start_no = max(start or 1, 1)
+        end_no = total if not end else min(end, total)
+        return {
+            "range_type": "full" if start_no == 1 and end_no == total else "partial",
+            "start": start_no,
+            "end": end_no,
+        }
+
+    def export_output_path(self, book_id: str, safe_title: str, fmt: str, total: int, start: int = 0, end: int = 0) -> Path:
+        """返回带格式和章节范围的导出文件路径。"""
+        ext = ".epub" if fmt == "epub" else ".txt"
+        label = self.export_range_label(total, start, end)
+        return self.book_dir(book_id) / "outputs" / f"{safe_title}_{label}{ext}"
+
+    def export_manifest_path(self, output_file: Path) -> Path:
+        """返回导出文件对应的 sidecar manifest 路径。"""
+        return output_file.with_name(f"{output_file.name}.manifest.json")
+
+    def load_export_manifest(self, output_file: Path) -> dict[str, Any] | None:
+        """读取导出文件对应的 manifest。"""
+        path = self.export_manifest_path(output_file)
+        if not path.exists():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def save_export_manifest(
+        self,
+        metadata: BookMetadata,
+        fmt: str,
+        output_file: Path,
+        total_chapters: int,
+        selected_chapters: list[ChapterTask],
+        chapter_fingerprint: str,
+        start: int = 0,
+        end: int = 0,
+    ) -> None:
+        """保存导出文件的范围和章节标志，避免后续误复用。"""
+        range_info = self.export_range_info(total_chapters, start, end)
+        payload = {
+            "version": 1,
+            "book_id": metadata.book_id,
+            "title": metadata.title,
+            "format": fmt,
+            **range_info,
+            "total_chapters": total_chapters,
+            "chapter_fingerprint": chapter_fingerprint,
+            "chapter_ids": [chapter.chapter_id for chapter in selected_chapters],
+            "output_file": output_file.name,
+            "created_at": int(time.time()),
+        }
+        self.export_manifest_path(output_file).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def export_manifest_matches(
+        self,
+        manifest: dict[str, Any] | None,
+        metadata: BookMetadata,
+        fmt: str,
+        output_file: Path,
+        total_chapters: int,
+        selected_chapters: list[ChapterTask],
+        chapter_fingerprint: str,
+        start: int = 0,
+        end: int = 0,
+    ) -> bool:
+        """判断导出 manifest 是否和本次请求完全匹配。"""
+        if not manifest or not output_file.exists():
+            return False
+        range_info = self.export_range_info(total_chapters, start, end)
+        expected_chapter_ids = [chapter.chapter_id for chapter in selected_chapters]
+        return (
+            manifest.get("book_id") == metadata.book_id
+            and manifest.get("format") == fmt
+            and manifest.get("range_type") == range_info["range_type"]
+            and int(manifest.get("start") or 0) == range_info["start"]
+            and int(manifest.get("end") or 0) == range_info["end"]
+            and int(manifest.get("total_chapters") or 0) == total_chapters
+            and manifest.get("chapter_fingerprint") == chapter_fingerprint
+            and manifest.get("chapter_ids") == expected_chapter_ids
+            and manifest.get("output_file") == output_file.name
+        )
+
+    def missing_chapters(self, book_id: str, chapters: list[ChapterTask]) -> list[ChapterTask]:
+        """返回本次请求范围内尚未缓存的章节。"""
+        return [chapter for chapter in chapters if not self.chapter_cache_path(book_id, chapter).exists()]
+
+    def load_selected_chapters(self, book_id: str, chapters: list[ChapterTask]) -> list[dict]:
+        """按本次请求的章节范围精确加载缓存，避免混入其他范围章节。"""
+        rows = []
+        missing = []
+        for chapter in chapters:
+            path = self.chapter_cache_path(book_id, chapter)
+            if not path.exists():
+                missing.append(f"{chapter.index + 1}. {chapter.title}")
+                continue
+            rows.append(json.loads(path.read_text(encoding="utf-8")))
+        if missing:
+            preview = "、".join(missing[:5])
+            suffix = "……" if len(missing) > 5 else ""
+            raise ValueError(f"章节缓存不完整，缺少：{preview}{suffix}")
         return rows
 
     def clear_book_runtime(self, book_id: str) -> None:

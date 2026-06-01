@@ -31,8 +31,9 @@ class ZipPacker:
         return f"esj{book_id}"
 
     def pack(self, book_dir: Path, output_file: Path, book_id: str, safe_title: str) -> tuple[Path, str]:
-        """把书籍输出目录压缩成 ZIP 并返回密码。"""
-        package_path = book_dir / "packages" / f"{safe_title}.zip"
+        """把指定导出文件压缩成同名 ZIP 并返回密码。"""
+        package_path = book_dir / "packages" / f"{output_file.stem}.zip"
+        package_path.parent.mkdir(parents=True, exist_ok=True)
         password = self.build_password(book_id)
         with pyzipper.AESZipFile(package_path, "w", compression=pyzipper.ZIP_DEFLATED, encryption=pyzipper.WZ_AES) as zf:
             zf.setpassword(password.encode("utf-8"))

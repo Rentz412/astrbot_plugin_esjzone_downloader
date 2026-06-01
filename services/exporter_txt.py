@@ -11,9 +11,10 @@ from .models import BookMetadata
 
 class TxtExporter:
     """将缓存章节导出为纯文本文件。"""
-    def export(self, book_dir: Path, metadata: BookMetadata, chapters: list[dict]) -> Path:
+    def export(self, book_dir: Path, metadata: BookMetadata, chapters: list[dict], output: Path | None = None) -> Path:
         """将章节缓存导出为目标文件。"""
-        output = book_dir / "outputs" / f"{metadata.safe_title}.txt"
+        output = output or book_dir / "outputs" / f"{metadata.safe_title}.txt"
+        output.parent.mkdir(parents=True, exist_ok=True)
         lines = [
             metadata.title,
             f"作者：{metadata.author}",

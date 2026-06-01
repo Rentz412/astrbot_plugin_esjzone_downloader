@@ -26,7 +26,7 @@ PLUGIN_NAME = "astrbot_plugin_esjzone_downloader"
     PLUGIN_NAME,
     "Rentz",
     "ESJZone 小说下载器，支持登录、EPUB/TXT 导出、ZIP 打包和 Dashboard 管理。",
-    "1.0.0",
+    "1.1.0",
 )
 class EsjZoneDownloaderPlugin(Star):
     """AstrBot 插件主类，负责连接聊天命令、Web API 与底层下载服务。"""
@@ -365,6 +365,14 @@ class EsjZoneDownloaderPlugin(Star):
                 else:
                     text = "文件发送失败，请私聊机器人或联系管理员查看。"
                 yield self._reply(event, text)
+            finally:
+                # packages/ 下的 ZIP 是临时发送产物；章节缓存、导出文件和 manifest 会继续保留复用。
+                try:
+                    if package_path.exists():
+                        package_path.unlink()
+                        logger.info(f"已清理临时 ZIP 文件：{package_path}")
+                except Exception:
+                    logger.warning(f"临时 ZIP 文件清理失败：{package_path}", exc_info=True)
         except Exception as exc:
             logger.exception("下载失败")
             yield event.plain_result(f"下载失败：{exc}")

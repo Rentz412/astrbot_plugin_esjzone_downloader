@@ -173,15 +173,28 @@ class EsjDownloader:
         book_dir = self.repo.book_dir(metadata.book_id)
         remote_fp = self.repo.fingerprint(chapters)
         status = self.repo.load_status(metadata.book_id)
-        output_ext = ".epub" if fmt == "epub" else ".txt"
-        output_file = book_dir / "outputs" / f"{metadata.safe_title}{output_ext}"
+        output_file = self.repo.export_output_path(metadata.book_id, metadata.safe_title, fmt, len(chapters), start, end)
 
-        if status and status.get("chapter_fingerprint") == remote_fp and output_file.exists():
-            package_path, password = self.packer.pack(book_dir, output_file, metadata.book_id, metadata.safe_title)
-            return DownloadResult(metadata.book_id, metadata.title, str(output_file), str(package_path), password, True, fmt, len(chapters_to_download))
-
+        # 每次下载命令都会先 fetch_info 获取网站最新目录，并用目录指纹判断本地缓存是否过期。
+        # 如果远程目录变化，清理运行时产物，避免旧章节/旧导出文件和新目录混用。
         if status and status.get("chapter_fingerprint") != remote_fp:
             self.repo.clear_book_runtime(metadata.book_id)
+            book_dir = self.repo.book_dir(metadata.book_id)
+
+        manifest = self.repo.load_export_manifest(output_file)
+        if self.repo.export_manifest_matches(
+            manifest,
+            metadata,
+            fmt,
+            output_file,
+            len(chapters),
+            chapters_to_download,
+            remote_fp,
+            start,
+            end,
+        ):
+            package_path, password = self.packer.pack(book_dir, output_file, metadata.book_id, metadata.safe_title)
+            return DownloadResult(metadata.book_id, metadata.title, str(output_file), str(package_path), password, True, fmt, len(chapters_to_download))
 
         self.repo.save_metadata(metadata)
         failed = 0
@@ -220,9 +233,11 @@ class EsjDownloader:
                         if self.logger:
                             self.logger.exception(f"章节下载失败: {chapter.title}")
 
-            await asyncio.gather(*(fetch_one(c) for c in chapters_to_download))
+            missing_chapters = self.repo.missing_chapters(metadata.book_id, chapters_to_download)
+            if missing_chapters:
+                await asyncio.gather(*(fetch_one(c) for c in missing_chapters))
 
-        cached = self.repo.load_chapters(metadata.book_id)
+        cached = self.repo.load_selected_chapters(metadata.book_id, chapters_to_download)
         if not cached:
             raise ValueError("没有可导出的章节内容。")
 
@@ -255,7 +270,7 @@ class EsjDownloader:
             )
 
         if fmt == "txt":
-            output_file = self.txt_exporter.export(book_dir, metadata, cached)
+            output_file = self.txt_exporter.export(book_dir, metadata, cached, output=output_file)
         else:
             output_file = self.epub_exporter.export(
                 book_dir,
@@ -263,8 +278,19 @@ class EsjDownloader:
                 cached,
                 cover_path=cover_path,
                 image_items=image_items,
+                output=output_file,
             )
 
+        self.repo.save_export_manifest(
+            metadata,
+            fmt,
+            output_file,
+            len(chapters),
+            chapters_to_download,
+            remote_fp,
+            start,
+            end,
+        )
         package_path, password = self.packer.pack(book_dir, output_file, metadata.book_id, metadata.safe_title)
         self.repo.save_status(
             metadata,
