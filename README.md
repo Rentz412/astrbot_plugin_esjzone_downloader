@@ -4,7 +4,7 @@
 一个用于 AstrBot 的 ESJZone 小说下载插件。
 本插件用于在 AstrBot 中通过聊天命令下载 ESJZone 小说，支持用户独立登录、自动 Cookie 校验、EPUB / TXT 导出、本地书库缓存和 ZIP 打包发送。、
 
-！！！注意：目前插件仍处于初步开发中，有部分功能不可用/出现问题，欢迎提交issue！！！
+！！！目前插件仍处于初步开发中，有功能出现问题欢迎反馈！！！
 
 ## 插件已实现的功能
 
@@ -17,14 +17,15 @@
 - epub格式支持自选嵌入封面插图
 - 插件输出状态的简详输出
 - 生成EPUB下载封面和插图时，自动识别/修正内嵌图片格式，降低因扩展名或响应头异常导致的阅读器兼容问题
+- 提供 AstrBot Dashboard / Plugin Page 可视化管理界面，可查看本地书库、封面、占用空间和调试文件状态
 
 ## 插件状况
 
 - ~~[Bug] 当自选章节下载，且存在全本小说时，会直接输出全本小说~~（v1.1.0 已修复）
-- [ToDo] Dashboard (AstrBot Pages) 待开发
+- ~~[ToDo] Dashboard (AstrBot Pages) 待开发~~（v2.0.0 已初步开发完成）
 - [ToDo] 增加 Dashboard ZIP 下载按钮。
-- [ToDo] 增加 Dashboard 删除书籍二次确认。
 - [ToDo] 增加 Dashboard 日志查看。
+- [ToDo] 增加 Dashboard 亮色/深色主题切换。
 
 ## 功能
 
@@ -35,6 +36,52 @@
 - `/esj d <编号或URL> [epub|txt] [起始章节] [结束章节]` 下载并打包
 - `/esj logout` 清除当前用户登录态
 - `/esj clear ...` 清理缓存/输出/书籍/Cookie
+
+## Dashboard 可视化管理界面
+
+插件提供基于 AstrBot Plugin Page 的 Dashboard 页面，用于在 WebUI 中查看和管理本地缓存的 ESJZone 书库数据。页面为纯前端实现，无需额外构建步骤；数据由插件后端扫描本地数据目录后生成。
+
+### Dashboard 主要能力
+
+- 查看插件名称、版本、作者和仓库链接。
+- 查看统计概览：
+  - 已保存登录态用户数量
+  - 本地小说数量
+  - 插件数据目录占用空间
+  - 调试文件数量
+- 浏览本地书库卡片：
+  - 展示书名、作者、下载状态、已导出格式
+  - 展示本地缓存封面
+  - 支持按书名、作者或书籍 ID 搜索
+- 查看单本书详情：
+  - 封面、简介、来源链接、信息块
+  - 章节总数、已缓存章节、最新章节、最近下载时间
+  - EPUB / TXT 输出文件列表、输出大小、本书总占用
+  - 失败章节数、失败图片数等异常状态
+- 清理数据：
+  - 清理调试文件
+  - 清除所有书籍导出文件（TXT / EPUB 与 manifest）
+  - 删除所有本地书籍数据
+  - 清除单本书导出文件
+  - 删除单本书本地数据
+
+### Dashboard 使用说明
+
+安装并启用插件后，可在 AstrBot WebUI 的插件页面中打开本插件的 Dashboard / Plugin Page。进入页面后：
+
+1. 点击“刷新”可重新扫描本地书库和调试目录。
+2. 在“本地书库”中点击书籍卡片可进入详情页。
+3. 使用搜索框可快速按书名、作者或 ID 过滤书籍。
+4. 对删除、清理类操作，Dashboard 会弹出二次确认窗口，确认后才会执行。
+
+### Dashboard 数据与安全说明
+
+- Dashboard 展示的数据来自插件本地数据目录，不会主动访问 ESJZone。
+- “刷新”仅重新扫描本地文件并更新 `dashboard_cache.json`。
+- 书籍封面通过插件后端接口读取本地封面文件，并在 Plugin Page 中以 data URL 方式展示，以兼容 AstrBot WebUI 的鉴权环境。
+- “清除所有书籍文件”只删除已导出的 TXT / EPUB 文件及其 manifest，不删除章节缓存、封面、插图和书籍状态。
+- “删除所有书籍数据”和“删除本书”会删除对应书籍目录中的封面、章节、插图、导出文件、状态等全部本地数据，请谨慎操作。
+- “清理调试文件”会清空 `debug/auth` 和 `debug/pages` 下的文件。调试文件可能包含页面样本、请求诊断或登录态相关信息，排查完成后建议及时清理。
 
 ## 插件配置项
 
@@ -155,6 +202,7 @@ data/plugin_data/astrbot_plugin_esjzone_downloader/
 
 ```text
 data/plugin_data/astrbot_plugin_esjzone_downloader/
+├─ dashboard_cache.json
 ├─ auth/
 │  ├─ secret.key
 │  └─ users/
@@ -180,6 +228,7 @@ data/plugin_data/astrbot_plugin_esjzone_downloader/
 
 说明：
 
+- `dashboard_cache.json` 是 Dashboard 生成的本地书库快照，会在打开页面或点击刷新时自动创建 / 更新。
 - `auth/secret.key` 是本地加密密钥，请勿泄露，也不要随意删除。
 - `auth/users/` 保存加密后的用户登录态 / Cookie。执行 `/esj logout` 或 `/esj clear cookies` 会清理对应登录态。
 - `debug/auth/` 保存登录、Cookie 校验等认证流程调试文件。
@@ -223,4 +272,4 @@ python -m compileall astrbot_plugin_esjzone_downloader
 
 ### 代码生成说明
 
-本插件代码由 ChatGPT 5.5 辅助完成，并依据 AstrBot 插件开发文档和本项目规格书进行整理与实现。
+本插件代码由 ChatGPT 5.5 与 Claude-opus-4.7 辅助完成，并依据 AstrBot 插件开发文档和本项目规格书进行整理与实现。

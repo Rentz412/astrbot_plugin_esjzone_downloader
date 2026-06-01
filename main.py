@@ -4,8 +4,11 @@
 
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 from typing import Any
+
+from quart import jsonify, send_file
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
@@ -14,6 +17,7 @@ from astrbot.api.star import Context, Star, register
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 from .services.auth import EsjAuthService
+from .services.dashboard import DashboardService, guess_mime
 from .services.downloader import EsjDownloader
 from .services.repository import EsjRepository
 from .services.task_manager import TaskManager
@@ -25,7 +29,7 @@ PLUGIN_NAME = "astrbot_plugin_esjzone_downloader"
     PLUGIN_NAME,
     "Rentz",
     "ESJZone 小说下载器，支持登录、EPUB/TXT 导出和 ZIP 打包。",
-    "1.3.0",
+    "2.0.0",
 )
 class EsjZoneDownloaderPlugin(Star):
     """AstrBot 插件主类，负责连接聊天命令与底层下载服务。"""
@@ -41,7 +45,9 @@ class EsjZoneDownloaderPlugin(Star):
         self.auth_service = EsjAuthService(self.data_dir, self.config, logger)
         self.downloader = EsjDownloader(self.data_dir, self.config, logger)
         self.repository = EsjRepository(self.data_dir)
+        self.dashboard_service = DashboardService(self.data_dir, Path(__file__).parent)
         self.task_manager = TaskManager()
+        self._register_dashboard_apis()
 
     def _ensure_config_defaults(self) -> None:
         """补齐缺省配置，避免旧配置缺字段导致运行时报错。"""
@@ -60,6 +66,33 @@ class EsjZoneDownloaderPlugin(Star):
         dbg.setdefault("save_pages", True)
         dbg.setdefault("save_auth_pages", True)
         dbg.setdefault("save_chapter_pages", False)
+
+    def _register_dashboard_apis(self) -> None:
+        """注册 AstrBot Plugin Page 使用的 Dashboard API。"""
+        # register_web_api 会把路由挂到 /api/plug/<插件名>/... 下；
+        # 前端 bridge.apiGet/bridge.apiPost 只需要传入去掉插件名前缀后的相对端点。
+        routes = [
+            ("dashboard/cache", self.dashboard_cache, ["GET"], "Read ESJZone dashboard cache"),
+            ("dashboard/refresh", self.dashboard_refresh, ["POST"], "Refresh ESJZone dashboard cache"),
+            ("dashboard/logo", self.dashboard_logo, ["GET"], "Read ESJZone dashboard logo"),
+            ("dashboard/books/<book_id>/cover", self.dashboard_book_cover, ["GET"], "Read ESJZone book cover"),
+            ("dashboard/books/<book_id>/cover-data", self.dashboard_book_cover_data, ["GET"], "Read ESJZone book cover as data URL"),
+            ("dashboard/books/<book_id>", self.dashboard_book_detail, ["GET"], "Read ESJZone book detail"),
+            ("dashboard/books/<book_id>/clear-files", self.dashboard_clear_book_files, ["POST"], "Clear one book output files"),
+            ("dashboard/books/<book_id>/delete", self.dashboard_delete_book, ["POST"], "Delete one book"),
+            ("dashboard/books/clear-all-files", self.dashboard_clear_all_book_files, ["POST"], "Clear all book output files"),
+            ("dashboard/books/delete-all", self.dashboard_delete_all_books, ["POST"], "Delete all books"),
+            ("dashboard/debug/clear", self.dashboard_clear_debug, ["POST"], "Clear debug files"),
+        ]
+        for route, handler, methods, desc in routes:
+            self.context.register_web_api(f"/{PLUGIN_NAME}/{route}", handler, methods, desc)
+
+    def _refresh_dashboard_cache_quietly(self) -> None:
+        """刷新 Dashboard 缓存；失败时不影响聊天命令主流程。"""
+        try:
+            self.dashboard_service.refresh_cache()
+        except Exception:
+            logger.warning("Dashboard 缓存刷新失败", exc_info=True)
 
     def _message_cfg(self) -> dict[str, Any]:
         """读取消息回复相关配置，并兼容非字典配置。"""
@@ -288,6 +321,7 @@ class EsjZoneDownloaderPlugin(Star):
                         logger.info(f"已清理临时 ZIP 文件：{package_path}")
                 except Exception:
                     logger.warning(f"临时 ZIP 文件清理失败：{package_path}", exc_info=True)
+                self._refresh_dashboard_cache_quietly()
         except Exception as exc:
             logger.exception("下载失败")
             yield event.plain_result(f"下载失败：{exc}")
@@ -325,6 +359,72 @@ class EsjZoneDownloaderPlugin(Star):
             "/esj clear book <编号>\n"
             "/esj clear cookies"
         )
+
+    async def dashboard_cache(self):
+        """返回 Dashboard 缓存。"""
+        return jsonify(self.dashboard_service.load_cache())
+
+    async def dashboard_refresh(self):
+        """强制刷新 Dashboard 缓存。"""
+        return jsonify(self.dashboard_service.refresh_cache())
+
+    async def dashboard_logo(self):
+        """返回插件 Logo。"""
+        path = self.dashboard_service.logo_path()
+        if not path:
+            return jsonify({"error": "logo not found"}), 404
+        return await send_file(path, mimetype=guess_mime(path))
+
+    async def dashboard_book_cover(self, book_id: str):
+        """返回书籍封面。"""
+        # 保留二进制封面接口，便于浏览器直接访问或调试。
+        path = self.dashboard_service.cover_path(book_id)
+        if not path:
+            return jsonify({"error": "cover not found"}), 404
+        return await send_file(path, mimetype=guess_mime(path))
+
+    async def dashboard_book_cover_data(self, book_id: str):
+        """返回书籍封面的 data URL，供 Plugin Page 通过 bridge.apiGet 鉴权读取。"""
+        # Plugin Page 的 iframe 直接把 /api/plug/... 作为 img src 时可能拿不到 Dashboard 鉴权；
+        # 因此前端通过 bridge.apiGet 请求本接口，再把 data_url 赋给 img.src。
+        path = self.dashboard_service.cover_path(book_id)
+        if not path:
+            return jsonify({"error": "cover not found"}), 404
+        mime = guess_mime(path)
+        data = base64.b64encode(path.read_bytes()).decode("ascii")
+        return jsonify({
+            "book_id": book_id,
+            "name": path.name,
+            "mime": mime,
+            "data_url": f"data:{mime};base64,{data}",
+        })
+
+    async def dashboard_book_detail(self, book_id: str):
+        """返回单本书详情。"""
+        book = self.dashboard_service.get_book(book_id)
+        if not book:
+            return jsonify({"error": "book not found"}), 404
+        return jsonify(book)
+
+    async def dashboard_clear_book_files(self, book_id: str):
+        """清除单本书 TXT/EPUB 与对应 manifest。"""
+        return jsonify(self.dashboard_service.clear_book_files(book_id))
+
+    async def dashboard_delete_book(self, book_id: str):
+        """删除单本书全部本地数据。"""
+        return jsonify(self.dashboard_service.delete_book(book_id))
+
+    async def dashboard_clear_all_book_files(self):
+        """清除所有书籍 TXT/EPUB 与对应 manifest。"""
+        return jsonify(self.dashboard_service.clear_all_book_files())
+
+    async def dashboard_delete_all_books(self):
+        """删除全部本地书籍数据。"""
+        return jsonify(self.dashboard_service.delete_all_books())
+
+    async def dashboard_clear_debug(self):
+        """清理调试文件。"""
+        return jsonify(self.dashboard_service.clear_debug())
 
     def _is_group_event(self, event: AstrMessageEvent) -> bool:
         """兼容不同平台事件对象，判断是否来自群聊。"""

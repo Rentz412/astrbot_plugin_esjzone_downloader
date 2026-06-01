@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ESJZone 小说下载器</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div id="app" class="app-shell">
+      <!-- 顶部栏：展示插件信息和全局操作按钮 -->
+      <header class="topbar">
+        <div class="brand">
+          <img id="pluginLogo" class="brand-logo" alt="" />
+          <div class="brand-copy">
+            <div class="brand-line">
+              <h1 id="pluginName">ESJZone 小说下载器</h1>
+              <span id="pluginVersion" class="version-pill">v2.0.0</span>
+            </div>
+            <div class="brand-meta">
+              <span id="pluginAuthor">作者：Rentz</span>
+              <a id="repoLink" class="repo-link" href="#" target="_blank" rel="noreferrer">
+                <span class="icon icon-github"></span>
+                <span>GitHub</span>
+              </a>
+            </div>
+          </div>
+        </div>
+
+        <div class="topbar-actions">
+          <button id="refreshBtn" class="btn btn-soft" type="button">
+            <span class="icon icon-refresh-cw"></span>
+            <span>刷新</span>
+          </button>
+          <button id="clearAllFilesBtn" class="btn btn-danger-soft" type="button">
+            <span class="icon icon-file-text"></span>
+            <span>清除所有书籍文件</span>
+          </button>
+          <button id="deleteAllBooksBtn" class="btn btn-danger" type="button">
+            <span class="icon icon-trash-2"></span>
+            <span>清除所有书籍数据</span>
+          </button>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <!-- 书库首页：统计卡片、本地书籍列表与搜索框 -->
+        <section id="libraryView" class="view active">
+          <div class="summary-grid" id="summaryGrid"></div>
+
+          <section class="library-section">
+            <div class="section-heading">
+              <div>
+                <h2>本地书库</h2>
+                <p id="syncMeta">上次同步：-</p>
+              </div>
+              <div class="search-wrap">
+                <span class="icon icon-book-open"></span>
+                <input id="searchInput" type="search" placeholder="搜索书名、作者或 ID" />
+              </div>
+            </div>
+            <div id="bookGrid" class="book-grid"></div>
+          </section>
+        </section>
+
+        <!-- 书籍详情页：由 app.js 根据当前书籍动态渲染内容 -->
+        <section id="detailView" class="view">
+          <button id="backBtn" class="back-button" type="button">
+            <span class="icon icon-arrow-left"></span>
+            <span>返回书库</span>
+          </button>
+          <div id="detailContent" class="detail-layout"></div>
+        </section>
+      </main>
+
+      <!-- 操作结果轻提示 -->
+      <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+      <!-- 删除/清理等危险操作的二次确认弹窗 -->
+      <div id="confirmDialog" class="modal-backdrop" aria-hidden="true">
+        <div class="modal" role="dialog" aria-modal="true">
+          <div id="confirmIcon" class="modal-icon">
+            <span class="icon icon-triangle-alert"></span>
+          </div>
+          <div class="modal-copy">
+            <h3 id="confirmTitle"></h3>
+            <p id="confirmMessage"></p>
+          </div>
+          <div class="modal-actions">
+            <button id="cancelConfirmBtn" class="btn btn-ghost" type="button">取消</button>
+            <button id="acceptConfirmBtn" class="btn btn-danger" type="button">确认</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
