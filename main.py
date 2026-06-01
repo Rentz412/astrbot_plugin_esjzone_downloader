@@ -26,7 +26,7 @@ PLUGIN_NAME = "astrbot_plugin_esjzone_downloader"
     PLUGIN_NAME,
     "Rentz",
     "ESJZone 小说下载器，支持登录、EPUB/TXT 导出、ZIP 打包和 Dashboard 管理。",
-    "1.1.0",
+    "1.2.0",
 )
 class EsjZoneDownloaderPlugin(Star):
     """AstrBot 插件主类，负责连接聊天命令、Web API 与底层下载服务。"""
@@ -336,6 +336,15 @@ class EsjZoneDownloaderPlugin(Star):
         if not auth:
             yield event.plain_result(self._not_login_text(event))
             return
+
+        # 兼容 /esj d <编号> <起始章节> [结束章节] 这种省略格式的写法。
+        # AstrBot 会把第一个可选参数先绑定到 fmt，因此这里检测数字并把参数右移回章节范围。
+        if str(fmt or "").isdigit():
+            range_start = int(fmt)
+            range_end = start
+            fmt = ""
+            start = range_start
+            end = range_end
 
         fmt = (fmt or self.config.get("download", {}).get("default_format", "epub")).lower()
         session_key = getattr(event, "unified_msg_origin", None) or "default"

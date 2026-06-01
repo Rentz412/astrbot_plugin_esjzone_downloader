@@ -21,7 +21,7 @@
 ## 插件状况
 
 - ~~[Bug] 当自选章节下载，且存在全本小说时，会直接输出全本小说~~（v1.1.0 已修复）
-- [ToDo] Dashboard/Webui待开发（目前属于不可用状态，请勿打开！）
+- [ToDo] Dashboard待开发（目前属于不可用状态，请勿打开！）
 - [ToDo] 增加 Dashboard ZIP 下载按钮。
 - [ToDo] 增加 Dashboard 删除书籍二次确认。
 - [ToDo] 增加 Dashboard 日志查看。
