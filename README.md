@@ -5,6 +5,7 @@
 本插件用于在 AstrBot 中通过聊天命令下载 ESJZone 小说，支持用户独立登录、自动 Cookie 校验、EPUB / TXT 导出、本地书库缓存和 ZIP 打包发送。、
 
 ！！！目前插件仍处于初步开发中，有功能出现问题欢迎反馈！！！
+Tips：插件仅在aiocqhttp经过测试，其它平台建议自测。
 
 ## 插件已实现的功能
 
@@ -23,6 +24,9 @@
 
 - ~~[Bug] 当自选章节下载，且存在全本小说时，会直接输出全本小说~~（v1.1.0 已修复）
 - ~~[ToDo] Dashboard (AstrBot Pages) 待开发~~（v2.0.0 已初步开发完成）
+- [ToDo] 增加 个人收藏列表查看功能
+- [ToDo] 增加 小说搜索功能
+- [ToDo] 增加返回的消息合并转发功能（aiocqhttp）
 - [ToDo] 增加 Dashboard ZIP 下载按钮。
 - [ToDo] 增加 Dashboard 日志查看。
 - [ToDo] 增加 Dashboard 亮色/深色主题切换。
