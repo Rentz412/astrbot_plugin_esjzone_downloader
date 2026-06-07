@@ -19,6 +19,7 @@ from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 from .services.auth import EsjAuthService
 from .services.dashboard import DashboardService, guess_mime
 from .services.downloader import EsjDownloader
+from .services.favorite import FavoriteRefreshCooldown, FavoriteService
 from .services.repository import EsjRepository
 from .services.task_manager import TaskManager
 
@@ -44,6 +45,7 @@ class EsjZoneDownloaderPlugin(Star):
         self._ensure_config_defaults()
         self.auth_service = EsjAuthService(self.data_dir, self.config, logger)
         self.downloader = EsjDownloader(self.data_dir, self.config, logger)
+        self.favorite_service = FavoriteService(self.data_dir, self.config, logger)
         self.repository = EsjRepository(self.data_dir)
         self.dashboard_service = DashboardService(self.data_dir, Path(__file__).parent)
         self.task_manager = TaskManager()
@@ -59,6 +61,15 @@ class EsjZoneDownloaderPlugin(Star):
         msg.setdefault("private_verbose_status", True)
         msg.setdefault("group_verbose_status", False)
         msg.setdefault("group_mention_user", True)
+
+        self.config.setdefault("favorite", {})
+        fav = self.config["favorite"]
+        fav.setdefault("passive_refresh_ttl_seconds", 600)
+        fav.setdefault("manual_refresh_cd_seconds", 60)
+        fav.setdefault("page_size", 20)
+        fav.setdefault("max_pages", 50)
+        fav.setdefault("send_forward", True)
+        fav.setdefault("save_raw_html", False)
 
         self.config.setdefault("debug", {})
         dbg = self.config["debug"]
@@ -123,6 +134,155 @@ class EsjZoneDownloaderPlugin(Star):
                 return event.plain_result(text)
         return event.plain_result(text)
 
+    def _favorite_cfg(self) -> dict[str, Any]:
+        """读取收藏列表相关配置，并兼容非字典配置。"""
+        cfg = self.config.get("favorite", {}) if hasattr(self.config, "get") else {}
+        return cfg if isinstance(cfg, dict) else {}
+
+    def _favorite_page_size(self) -> int:
+        """返回收藏列表每页展示数量。"""
+        try:
+            return max(1, min(int(self._favorite_cfg().get("page_size", 20)), 50))
+        except Exception:
+            return 20
+
+    def _favorite_parse_page(self, value: str, default: int = 1) -> int:
+        """解析收藏列表展示页码。"""
+        if not value:
+            return default
+        if not str(value).isdigit():
+            return default
+        return max(1, int(value))
+
+    def _favorite_help_text(self) -> str:
+        """生成收藏列表命令帮助。"""
+        return (
+            "ESJZone 收藏列表命令：\n\n"
+            "/esj f                 查看个人收藏列表第 1 页\n"
+            "/esj f <页码>          查看个人收藏列表指定页\n"
+            "/esj f refresh         手动刷新收藏列表\n"
+            "/esj f refresh <页码>  手动刷新后查看指定页\n"
+            "/esj f clear           清除当前用户收藏缓存\n\n"
+            "说明：普通查看会在缓存超过设定时间后自动刷新；手动刷新有冷却时间。"
+        )
+
+    @staticmethod
+    def _favorite_book_text(book) -> str:
+        """格式化单本收藏书籍。"""
+        lines = [
+            f"{book.index}. {book.title}",
+            book.url,
+        ]
+        if book.latest:
+            lines.append(f"最新：{book.latest}")
+        if book.last_read:
+            lines.append(f"最後觀看：{book.last_read}")
+        if book.updated_at:
+            lines.append(f"更新日期：{book.updated_at}")
+        return "\n".join(lines)
+
+    def _favorite_page_items(self, result, page: int) -> tuple[list, int, int]:
+        """根据展示页码切片收藏条目。"""
+        page_size = self._favorite_page_size()
+        total = len(result.items)
+        total_pages = max((total + page_size - 1) // page_size, 1)
+        page = min(max(page, 1), total_pages)
+        start = (page - 1) * page_size
+        return result.items[start:start + page_size], page, total_pages
+
+    def _favorite_summary_text(self, result, page: int, total_pages: int) -> str:
+        """生成收藏列表摘要文本。"""
+        page_size = self._favorite_page_size()
+        source_host = result.source_host or "www.esjzone.one"
+        status = result.status_message or ("使用缓存数据" if result.from_cache else "获取成功")
+        lines = [
+            "ESJZone 收藏列表",
+            "",
+            f"{result.username}的收藏列表上次更新于：{result.fetched_at_text or '未知'}",
+            "如需手动刷新请发送：/esj f refresh",
+            "",
+            f"共 {len(result.items)} 本",
+            f"第 {page}/{total_pages} 页，每页 {page_size} 本",
+            f"来源：{source_host}",
+            f"状态：{status}",
+        ]
+        if result.error_message:
+            lines.append(f"失败原因：{result.error_message}")
+        if page < total_pages:
+            lines.append(f"下一页：/esj f {page + 1}")
+        return "\n".join(lines)
+
+    def _favorite_fallback_text(self, result, page: int) -> str:
+        """生成普通文本 fallback。"""
+        items, page, total_pages = self._favorite_page_items(result, page)
+        blocks = [self._favorite_summary_text(result, page, total_pages)]
+        blocks.extend(self._favorite_book_text(item) for item in items)
+        return "\n\n".join(blocks)
+
+    def _favorite_forward_chain(self, event: AstrMessageEvent, result, page: int) -> list:
+        """生成单条合并转发消息链。
+
+        注意：多个 Node 直接放进消息链时，部分 OneBot 适配器会拆成多条合并消息；
+        因此这里优先用 Nodes 包装全部 Node，确保最终只发送一条合并转发。
+        """
+        items, page, total_pages = self._favorite_page_items(result, page)
+        try:
+            uin = int(event.get_sender_id())
+        except Exception:
+            uin = 10000
+        try:
+            name = event.get_sender_name() or "ESJZone"
+        except Exception:
+            name = "ESJZone"
+
+        texts = [self._favorite_summary_text(result, page, total_pages)]
+        texts.extend(self._favorite_book_text(item) for item in items)
+        nodes = [
+            Comp.Node(
+                uin=uin,
+                name=name,
+                content=[Comp.Plain(text)],
+            )
+            for text in texts
+        ]
+
+        nodes_cls = getattr(Comp, "Nodes", None)
+        if not nodes_cls:
+            raise RuntimeError("当前 AstrBot 消息组件不支持 Nodes 合并转发容器")
+
+        # 兼容不同 AstrBot 版本里 Nodes 构造参数命名差异。
+        for kwargs in ({"nodes": nodes}, {"content": nodes}, {"node": nodes}):
+            try:
+                return [nodes_cls(**kwargs)]
+            except TypeError:
+                pass
+
+        try:
+            return [nodes_cls(nodes)]
+        except TypeError:
+            pass
+
+        container = nodes_cls()
+        for attr in ("nodes", "content", "node"):
+            try:
+                setattr(container, attr, nodes)
+                return [container]
+            except Exception:
+                pass
+        raise RuntimeError("无法构造 Nodes 合并转发容器")
+
+    async def _send_favorite_result(self, event: AstrMessageEvent, result, page: int):
+        """优先用单条合并转发发送收藏列表，失败则降级普通文本。"""
+        cfg = self._favorite_cfg()
+        fallback_text = self._favorite_fallback_text(result, page)
+        if bool(cfg.get("send_forward", True)):
+            try:
+                await event.send(event.chain_result(self._favorite_forward_chain(event, result, page)))
+                return
+            except Exception:
+                logger.warning("收藏列表合并转发发送失败，降级为普通文本", exc_info=True)
+        yield self._reply(event, fallback_text)
+
     def _download_start_text(self, event: AstrMessageEvent, fmt: str) -> str:
         """生成下载开始提示文案。"""
         if self._is_verbose_reply(event):
@@ -154,6 +314,8 @@ class EsjZoneDownloaderPlugin(Star):
             "/esj i <编号或规范URL>  查看书籍简介、编号、章节数\n"
             "/esj c <编号或规范URL>  查看最近更新章节\n"
             "/esj d <编号或规范URL> [epub|txt] [起始章节] [结束章节]\n"
+            "/esj f [页码]           查看个人收藏列表\n"
+            "/esj f refresh [页码]   手动刷新个人收藏列表\n"
             "/esj l <邮箱> <密码>    私聊登录并保存 Cookie\n"
             "/esj logout             私聊清除当前用户 Cookie\n"
             "/esj clear cache|outputs|book <id>\n\n"
@@ -195,6 +357,56 @@ class EsjZoneDownloaderPlugin(Star):
 
         ok = await self.auth_service.logout_user(event)
         yield event.plain_result("已清除当前用户登录态。" if ok else "当前用户没有保存登录态。")
+
+    @esj.command("favor", alias={"f", "favorite"})
+    async def esj_favor(self, event: AstrMessageEvent, arg1: str = "", arg2: str = ""):
+        """查看个人 ESJZone 收藏列表。"""
+        action = (arg1 or "").strip().lower()
+        page_arg = arg2 if action in {"refresh", "clear", "help"} else arg1
+        page = self._favorite_parse_page(page_arg)
+
+        if action in {"help", "h", "?"}:
+            yield event.plain_result(self._favorite_help_text())
+            return
+
+        auth = await self.auth_service.require_auth_or_reply(event)
+        if not auth:
+            yield event.plain_result(self._not_login_text(event))
+            return
+
+        if action == "clear":
+            ok = self.favorite_service.clear_cache(auth)
+            yield event.plain_result("已清除当前用户的收藏列表缓存。" if ok else "当前用户没有收藏列表缓存。")
+            return
+
+        force_refresh = action == "refresh"
+        if action and not action.isdigit() and action != "refresh":
+            yield event.plain_result(self._favorite_help_text())
+            return
+
+        try:
+            result = await self.favorite_service.get_favorites(auth, force_refresh=force_refresh)
+        except FavoriteRefreshCooldown as exc:
+            yield event.plain_result(f"手动刷新过于频繁，请 {exc.remaining_seconds} 秒后再试。")
+            return
+        except Exception as exc:
+            logger.exception("获取收藏列表失败")
+            yield event.plain_result(f"获取收藏列表失败：{exc}")
+            return
+
+        if not result.items:
+            yield self._reply(
+                event,
+                (
+                    f"{result.username}的收藏列表为空。\n"
+                    f"上次更新于：{result.fetched_at_text or '未知'}\n"
+                    "如需手动刷新请发送：/esj f refresh"
+                ),
+            )
+            return
+
+        async for message in self._send_favorite_result(event, result, page):
+            yield message
 
     @esj.command("info", alias={"i"})
     async def esj_info(self, event: AstrMessageEvent, url: str):

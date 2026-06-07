@@ -77,6 +77,46 @@
       }
     }
   },
+  "favorite": {
+    "description": "收藏列表配置",
+    "type": "object",
+    "items": {
+      "passive_refresh_ttl_seconds": {
+        "description": "收藏列表被动刷新间隔（秒）",
+        "type": "int",
+        "default": 600,
+        "hint": "超过该时间后，用户再次执行 /esj f 会自动重新抓取收藏页。默认 10 分钟。"
+      },
+      "manual_refresh_cd_seconds": {
+        "description": "手动刷新冷却时间（秒）",
+        "type": "int",
+        "default": 60,
+        "hint": "用户执行 /esj f refresh 后的冷却时间。默认 1 分钟。"
+      },
+      "page_size": {
+        "description": "收藏列表每页显示数量",
+        "type": "int",
+        "default": 20
+      },
+      "max_pages": {
+        "description": "收藏列表最多抓取页数",
+        "type": "int",
+        "default": 50,
+        "hint": "用于限制 /my/favorite/1..N 的最大抓取页数，避免异常页面导致过多请求。"
+      },
+      "send_forward": {
+        "description": "优先使用合并转发发送收藏列表",
+        "type": "bool",
+        "default": true
+      },
+      "save_raw_html": {
+        "description": "保存收藏页 HTML 缓存",
+        "type": "bool",
+        "default": false,
+        "hint": "收藏页 HTML 可能包含个人收藏信息，仅建议调试时开启。"
+      }
+    }
+  },
   "message": {
     "description": "消息输出配置",
     "type": "object",

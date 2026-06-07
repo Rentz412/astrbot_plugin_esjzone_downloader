@@ -7,11 +7,14 @@
 ！！！目前插件仍处于初步开发中，有功能出现问题欢迎反馈！！！
 Tips：插件仅在aiocqhttp经过测试，其它平台建议自测。
 
+Tips：插件仅在aiocqhttp经过测试，其它平台未知。
+
 ## 插件已实现的功能
 
 - 登录后可保存并使用cookie保持登录状态
 - 自动连接ESJ国内站，避免无法访问的问题
 - 获取书籍详情、更新状态
+- 查看个人收藏列表，支持缓存、手动刷新、合并转发展示和普通文本降级
 - 下载全本小说（epub/txt）
 - 打包小说为zip格式并使用密码加密发送给用户
 - 小说自选章节下载
@@ -24,9 +27,9 @@ Tips：插件仅在aiocqhttp经过测试，其它平台建议自测。
 
 - ~~[Bug] 当自选章节下载，且存在全本小说时，会直接输出全本小说~~（v1.1.0 已修复）
 - ~~[ToDo] Dashboard (AstrBot Pages) 待开发~~（v2.0.0 已初步开发完成）
-- [ToDo] 增加 个人收藏列表查看功能
+- ~~[ToDo] 增加 个人收藏列表查看功能~~（v2.1.0 已初步开发）
 - [ToDo] 增加 小说搜索功能
-- [ToDo] 增加返回的消息合并转发功能（aiocqhttp）
+- [ToDo] 增加返回的消息合并转发功能（aiocqhttp）（v2.1.0 正在逐步开发）
 - [ToDo] 增加 Dashboard ZIP 下载按钮。
 - [ToDo] 增加 Dashboard 日志查看。
 - [ToDo] 增加 Dashboard 亮色/深色主题切换。
@@ -38,6 +41,9 @@ Tips：插件仅在aiocqhttp经过测试，其它平台建议自测。
 - `/esj i <编号或URL>` 查看书籍信息
 - `/esj c <编号或URL>` 查看最近更新
 - `/esj d <编号或URL> [epub|txt] [起始章节] [结束章节]` 下载并打包
+- `/esj f [页码]` 查看个人收藏列表
+- `/esj f refresh [页码]` 手动刷新个人收藏列表
+- `/esj f clear` 清除当前用户收藏列表缓存
 - `/esj logout` 清除当前用户登录态
 - `/esj clear ...` 清理缓存/输出/书籍/Cookie
 
@@ -122,6 +128,31 @@ Tips：插件仅在aiocqhttp经过测试，其它平台建议自测。
 | `book_id` | 密码为 `esj<book_id>` |
 | `random` | 随机生成密码 |
 | `fixed` | 使用固定密码 |
+
+---
+
+### 收藏列表配置 `favorite`
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|---|---|---:|---|
+| `passive_refresh_ttl_seconds` | int | `600` | `/esj f` 被动刷新间隔，缓存超过该时间会自动重新抓取 |
+| `manual_refresh_cd_seconds` | int | `60` | `/esj f refresh` 手动刷新冷却时间 |
+| `page_size` | int | `20` | 收藏列表每页展示数量 |
+| `max_pages` | int | `50` | 最多抓取 ESJZone 收藏页页数，防止异常分页导致过多请求 |
+| `send_forward` | bool | `true` | 优先使用合并转发发送收藏列表 |
+| `save_raw_html` | bool | `false` | 是否保存收藏页 HTML，可能包含个人收藏信息，仅建议调试时开启 |
+
+收藏列表命令说明：
+
+```text
+/esj f                 查看个人收藏列表第 1 页
+/esj f <页码>          查看个人收藏列表指定页
+/esj f refresh         手动刷新收藏列表
+/esj f refresh <页码>  手动刷新后查看指定页
+/esj f clear           清除当前用户收藏缓存
+```
+
+`/esj f` 会读取本地缓存；当缓存超过 `passive_refresh_ttl_seconds` 后，会在用户再次触发命令时被动刷新。`/esj f refresh` 会强制刷新，但受 `manual_refresh_cd_seconds` 冷却限制。
 
 ---
 
@@ -213,6 +244,12 @@ data/plugin_data/astrbot_plugin_esjzone_downloader/
 ├─ debug/
 │  ├─ auth/
 │  └─ pages/
+├─ users/
+│  └─ <user_hash>/
+│     └─ favorites/
+│        ├─ cache.json
+│        └─ pages/
+│           └─ page_1.html
 └─ books/
    └─ <book_id>/
       ├─ status.json
@@ -238,6 +275,8 @@ data/plugin_data/astrbot_plugin_esjzone_downloader/
 - `debug/auth/` 保存登录、Cookie 校验等认证流程调试文件。
 - `debug/pages/` 保存详情页、章节页、下载诊断 JSON、图片处理诊断等调试文件。
 - `debug/*` 仅在调试配置开启时写入，可能包含敏感登录态、页面内容或请求诊断信息，排查完成后建议关闭调试并按需删除。
+- `users/<user_hash>/favorites/cache.json` 保存当前用户的收藏列表缓存，包括书名、详情页、最新章节、最后观看章节和更新日期。
+- `users/<user_hash>/favorites/pages/` 仅在 `favorite.save_raw_html` 开启时保存收藏页 HTML，可能包含个人收藏信息，默认关闭。
 - `books/<book_id>/metadata.json` 保存书籍元数据，`status.json` 保存最近一次下载 / 打包状态。
 - `books/<book_id>/chapters/` 保存章节正文缓存。执行 `/esj clear cache` 会清理各书籍的章节缓存目录。
 - `books/<book_id>/illustrations/` 保存 EPUB 正文插图。插件会根据图片真实内容和响应头自动识别 / 修正扩展名与媒体类型，必要时转换为 PNG，以提升 EPUB 内嵌图片兼容性。

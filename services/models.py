@@ -94,6 +94,36 @@ class AuthContext:
 
 
 @dataclass(slots=True)
+class FavoriteBook:
+    """个人收藏列表中的单本书条目。"""
+    index: int
+    book_id: str
+    title: str
+    url: str
+    latest: str = ""
+    latest_url: str = ""
+    last_read: str = ""
+    updated_at: str = ""
+
+
+@dataclass(slots=True)
+class FavoriteListResult:
+    """个人收藏列表抓取、缓存和展示时使用的结果对象。"""
+    user_hash: str
+    username: str
+    source_host: str
+    source_url: str
+    fetched_at: int
+    fetched_at_text: str
+    items: list[FavoriteBook] = field(default_factory=list)
+    total_site_pages: int = 1
+    fetched_pages: int = 1
+    from_cache: bool = False
+    status_message: str = ""
+    error_message: str = ""
+
+
+@dataclass(slots=True)
 class DownloadResult:
     """下载与打包完成后返回给命令层的结果。"""
     book_id: str
