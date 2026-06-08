@@ -35,7 +35,7 @@
       "image_timeout": {
         "description": "图片请求超时时间（秒）",
         "type": "int",
-        "default": 8
+        "default": 30
       },
       "max_retries": {
         "description": "章节/图片最大重试次数",
