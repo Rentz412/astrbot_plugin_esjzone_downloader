@@ -1,6 +1,6 @@
 """ESJZone 登录态管理服务。
 
-封装账号密码登录、Cookie 校验/刷新、用户登录态加密落盘以及认证调试信息输出，避免入口命令层直接处理敏感凭据。"""
+封装账号密码登录、Cookie 校验、用户登录态加密落盘以及认证调试信息输出，避免入口命令层直接处理敏感凭据。"""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ ALLOWED_COOKIE_DOMAINS = {
 
 
 class EsjAuthService:
-    """管理 ESJZone 账号登录、Cookie 校验和本地加密凭据。"""
+    """管理 ESJZone 登录、Cookie 校验和本地加密登录态。"""
     def __init__(self, data_dir: Path, config: Any, logger: Any = None):
         """初始化对象依赖和运行时目录。"""
         self.data_dir = data_dir
@@ -46,6 +46,7 @@ class EsjAuthService:
         self.logger = logger
         self.users_dir.mkdir(parents=True, exist_ok=True)
         self.fernet = Fernet(self._load_or_create_key())
+        self._scrub_all_legacy_credentials()
 
     def _load_or_create_key(self) -> bytes:
         """读取或创建 Fernet 密钥，用于加密本地敏感信息。"""
@@ -93,6 +94,39 @@ class EsjAuthService:
         """返回指定用户登录态文件路径。"""
         return self.users_dir / f"{user_hash}.json"
 
+    @staticmethod
+    def _strip_legacy_credentials(payload: dict[str, Any]) -> bool:
+        """移除旧版本认证文件中保存的账号密码密文字段。"""
+        changed = False
+        for key in ("email_encrypted", "password_encrypted"):
+            if key in payload:
+                payload.pop(key, None)
+                changed = True
+        if payload.get("version") != 2:
+            payload["version"] = 2
+            changed = True
+        if payload.get("storage_policy") != "cookie_only_no_password":
+            payload["storage_policy"] = "cookie_only_no_password"
+            changed = True
+        return changed
+
+    def _scrub_all_legacy_credentials(self) -> None:
+        """启动时批量清理旧认证文件中遗留的账号密码密文字段。"""
+        scrubbed = 0
+        for path in self.users_dir.glob("*.json"):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(payload, dict):
+                    continue
+                if self._strip_legacy_credentials(payload):
+                    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                    scrubbed += 1
+            except Exception:
+                if self.logger:
+                    self.logger.warning(f"清理旧认证文件失败：{path.name}", exc_info=True)
+        if scrubbed and self.logger:
+            self.logger.info(f"[esj.auth] 已清理旧认证文件中的账号密码字段：{scrubbed} 个")
+
     def _debug_cfg(self) -> dict[str, Any]:
         """读取调试配置。"""
         cfg = self.config.get("debug", {}) if hasattr(self.config, "get") else {}
@@ -121,9 +155,9 @@ class EsjAuthService:
         (self._debug_dir() / filename).write_text(text, encoding="utf-8", errors="replace")
 
     def _debug_write_json(self, filename: str, payload: dict[str, Any]) -> None:
-        """按配置保存结构化调试信息。"""
+        """按配置保存认证结构化调试信息。"""
         cfg = self._debug_cfg()
-        if not cfg.get("enabled", False):
+        if not cfg.get("enabled", False) or not cfg.get("save_auth_pages", True):
             return
         (self._debug_dir() / filename).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -359,21 +393,22 @@ class EsjAuthService:
         return CookieValidationResult(False, reason="无法识别个人资料页登录态")
 
     async def save_user_auth(self, event, email: str, password: str, result: AuthResult) -> None:
-        """加密保存用户账号、密码和 Cookie。"""
+        """加密保存用户 Cookie，不持久化账号密码。"""
         user_hash, platform_id, _sender_id = self.user_hash_from_event(event)
         cookie_from_jar = self._cookie_header_from_rows(result.cookie_jar)
         cookie_header = cookie_from_jar if len(cookie_from_jar) > len(result.cookie_header or "") else result.cookie_header
+        now = int(time.time())
         payload = {
-            "version": 1,
+            "version": 2,
+            "storage_policy": "cookie_only_no_password",
             "platform_id": platform_id,
             "user_id_hash": user_hash,
-            "email_encrypted": self._encrypt(email),
-            "password_encrypted": self._encrypt(password),
+            "email_masked": self.mask_email(email),
             "cookie_header_encrypted": self._encrypt(cookie_header),
             "cookie_jar_encrypted": self._encrypt(json.dumps(result.cookie_jar, ensure_ascii=False)),
-            "cookie_updated_at": int(time.time()),
-            "last_login_at": int(time.time()),
-            "last_check_at": int(time.time()),
+            "cookie_updated_at": now,
+            "last_login_at": now,
+            "last_check_at": now,
             "status": "valid",
             "username_masked": result.username or self.mask_email(email),
         }
@@ -390,23 +425,20 @@ class EsjAuthService:
         self._user_file(user_hash).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     async def refresh_cookie(self, user_hash: str) -> AuthResult:
-        """使用保存的账号密码刷新指定用户 Cookie。"""
+        """Cookie 失效后不使用本地密码刷新，要求用户重新登录。"""
         path = self._user_file(user_hash)
-        if not path.exists():
-            return AuthResult(False, reason="未找到用户认证文件")
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        email = self._decrypt(payload["email_encrypted"])
-        password = self._decrypt(payload["password_encrypted"])
-        result = await self.login(email, password)
-        if result.success:
-            payload["cookie_header_encrypted"] = self._encrypt(result.cookie_header)
-            payload["cookie_jar_encrypted"] = self._encrypt(json.dumps(result.cookie_jar, ensure_ascii=False))
-            payload["cookie_updated_at"] = int(time.time())
-            payload["last_login_at"] = int(time.time())
-            payload["status"] = "valid"
-            payload["username_masked"] = result.username or self.mask_email(email)
-            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        return result
+        if path.exists():
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(payload, dict):
+                    payload["status"] = "invalid"
+                    payload["last_check_at"] = int(time.time())
+                    payload["invalid_reason"] = "cookie_expired_relogin_required"
+                    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            except Exception:
+                if self.logger:
+                    self.logger.warning("标记认证文件失效失败", exc_info=True)
+        return AuthResult(False, reason="Cookie 已失效，请重新私聊登录。")
 
     async def get_auth_context(self, event) -> AuthContext | None:
         """获取当前事件对应用户的认证上下文，必要时自动刷新。"""
@@ -416,6 +448,10 @@ class EsjAuthService:
             return None
 
         payload = json.loads(path.read_text(encoding="utf-8"))
+        legacy_scrubbed = self._strip_legacy_credentials(payload)
+        if legacy_scrubbed:
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
         cookie = self._decrypt(payload.get("cookie_header_encrypted", ""))
         cookie_jar: list[dict[str, Any]] = []
         encrypted_cookie_jar = payload.get("cookie_jar_encrypted", "")
@@ -464,21 +500,8 @@ class EsjAuthService:
             path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
             return None
 
-        refresh = await self.refresh_cookie(user_hash)
-        if not refresh.success:
-            payload["status"] = "invalid"
-            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            return None
-
-        return AuthContext(
-            user_hash=user_hash,
-            platform_id=platform_id,
-            sender_id=sender_id,
-            cookie=refresh.cookie_header,
-            cookie_jar=refresh.cookie_jar,
-            username=refresh.username,
-            refreshed=True,
-        )
+        await self.refresh_cookie(user_hash)
+        return None
 
     async def require_auth_or_reply(self, event) -> AuthContext | None:
         """命令执行前读取认证上下文；未登录时返回 None。"""

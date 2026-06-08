@@ -3,3 +3,13 @@ __pycache__/
 *.py[cod]
 *.class
 
+# Runtime/private plugin data
+data/
+plugin_data/
+auth/secret.key
+auth/users/
+debug/
+users/
+books/
+dashboard_cache.json
+

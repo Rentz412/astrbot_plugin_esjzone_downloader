@@ -5,13 +5,12 @@
 本插件用于在 AstrBot 中通过聊天命令下载 ESJZone 小说，支持用户独立登录、自动 Cookie 校验、EPUB / TXT 导出、本地书库缓存和 ZIP 打包发送。、
 
 ！！！目前插件仍处于初步开发中，有功能出现问题欢迎反馈！！！
-Tips：插件仅在aiocqhttp经过测试，其它平台建议自测。
 
-Tips：插件仅在aiocqhttp经过测试，其它平台未知。
+Tips：插件目前仅支持aiocqhttp，已经过测试，其它平台未知。
 
 ## 插件已实现的功能
 
-- 登录后可保存并使用cookie保持登录状态
+- 登录后仅加密保存 Cookie 登录态，不保存账号明文、密码明文或密码密文
 - 自动连接ESJ国内站，避免无法访问的问题
 - 获取书籍详情、更新状态
 - 查看个人收藏列表，支持缓存、手动刷新、合并转发展示和普通文本降级
@@ -27,9 +26,10 @@ Tips：插件仅在aiocqhttp经过测试，其它平台未知。
 
 - ~~[Bug] 当自选章节下载，且存在全本小说时，会直接输出全本小说~~（v1.1.0 已修复）
 - ~~[ToDo] Dashboard (AstrBot Pages) 待开发~~（v2.0.0 已初步开发完成）
-- ~~[ToDo] 增加 个人收藏列表查看功能~~（v2.1.0 已初步开发）
+- ~~[ToDo] 增加 个人收藏列表查看功能~~（v2.2.0 已初步开发）
 - [ToDo] 增加 小说搜索功能
-- [ToDo] 增加返回的消息合并转发功能（aiocqhttp）（v2.1.0 正在逐步开发）
+- [ToDo] 增加 搜索小说的结果使用合并消息展示
+- ~~[ToDo] 增加返回的消息合并转发功能~~（暂不打算对收藏列表展示、搜索结果展示外加入该支持）
 - [ToDo] 增加 Dashboard ZIP 下载按钮。
 - [ToDo] 增加 Dashboard 日志查看。
 - [ToDo] 增加 Dashboard 亮色/深色主题切换。
@@ -37,7 +37,7 @@ Tips：插件仅在aiocqhttp经过测试，其它平台未知。
 ## 功能
 
 - `/esj help` 查看帮助
-- `/esj l <邮箱> <密码>` 私聊登录并加密保存 Cookie
+- `/esj l <邮箱> <密码>` 私聊登录并加密保存 Cookie（不保存密码）
 - `/esj i <编号或URL>` 查看书籍信息
 - `/esj c <编号或URL>` 查看最近更新
 - `/esj d <编号或URL> [epub|txt] [起始章节] [结束章节]` 下载并打包
@@ -46,6 +46,16 @@ Tips：插件仅在aiocqhttp经过测试，其它平台未知。
 - `/esj f clear` 清除当前用户收藏列表缓存
 - `/esj logout` 清除当前用户登录态
 - `/esj clear ...` 清理缓存/输出/书籍/Cookie
+
+## 登录态与隐私安全说明
+
+- `/esj l <邮箱> <密码>` 仅在本次登录请求中临时使用账号密码。
+- 插件会保存 ESJZone 返回的 Cookie 登录态，用于后续请求；不会持久化保存邮箱明文、密码明文或密码密文。
+- Cookie 会使用本地 `auth/secret.key` 通过 Fernet 加密后写入 `auth/users/<user_hash>.json`。
+- 旧版本曾保存过 `email_encrypted` / `password_encrypted` 字段；升级后插件会在启动或读取认证文件时自动移除这些旧字段。
+- Cookie 失效后，插件不会再用本地保存的密码自动刷新登录态，而是要求用户重新私聊执行 `/esj l <邮箱> <密码>`。
+- 如需彻底清除登录态，可执行 `/esj logout`，管理员可执行 `/esj clear cookies` 清理全部用户 Cookie。
+- 不建议开启认证调试文件保存；`debug.save_auth_pages` 默认关闭，仅建议本地排查时临时开启，排查后请立即清理 `debug/auth`。
 
 ## Dashboard 可视化管理界面
 
@@ -106,7 +116,7 @@ Tips：插件仅在aiocqhttp经过测试，其它平台未知。
 | `enable_image_download` | bool | `true` | 生成 EPUB 时下载封面和正文插图 |
 | `allow_external_images` | bool | `true` | 允许下载外站图床图片 |
 | `request_timeout` | int | `15` | 页面请求超时时间，单位秒 |
-| `image_timeout` | int | `8` | 图片请求超时时间，单位秒 |
+| `image_timeout` | int | `30` | 图片请求超时时间，单位秒 |
 | `max_retries` | int | `3` | 章节 / 图片最大重试次数 |
 | `recent_chapter_count` | int | `8` | `/esj c` 显示最近章节数量 |
 | `user_agent` | string | 浏览器 UA | 请求 User-Agent |
@@ -172,21 +182,21 @@ Tips：插件仅在aiocqhttp经过测试，其它平台未知。
 |---|---|---:|---|
 | `enabled` | bool | `false` | 启用 ESJZone 插件调试日志 |
 | `save_pages` | bool | `true` | 调试模式下保存详情页和诊断 JSON |
-| `save_auth_pages` | bool | `true` | 调试模式下保存登录与个人资料页调试文件 |
+| `save_auth_pages` | bool | `false` | 调试模式下保存登录与个人资料页调试文件，可能包含个人页面内容，仅建议临时开启 |
 | `save_chapter_pages` | bool | `false` | 调试模式下保存章节页 HTML |
 
 说明：
 
 - 调试模式默认关闭。
-- 开启后，插件会在认证流程中保存登录页、token 响应、密码登录响应、跳转页、profile 校验页、抓取的HTML文件等样本。
+- 开启 `debug.enabled` 后会输出调试日志；只有额外开启 `debug.save_auth_pages` 时，才会在认证流程中保存登录页、token 响应、密码登录响应、跳转页、profile 校验页等样本。
 - 调试文件保存到：
 
 ```text
 data/plugin_data/astrbot_plugin_esjzone_downloader/debug/
 ```
 
-- 调试文件可能包含敏感登录态信息，仅建议开发排查时开启。
-- 排查完成后建议关闭调试模式，并按需删除 `debug` 目录。
+- 调试文件可能包含敏感登录态、个人资料页或页面内容，仅建议开发排查时临时开启。
+- 排查完成后建议关闭调试模式，并按需删除 `debug` 目录或在 Dashboard 中点击“清理调试文件”。
 
 ---
 
@@ -271,8 +281,8 @@ data/plugin_data/astrbot_plugin_esjzone_downloader/
 
 - `dashboard_cache.json` 是 Dashboard 生成的本地书库快照，会在打开页面或点击刷新时自动创建 / 更新。
 - `auth/secret.key` 是本地加密密钥，请勿泄露，也不要随意删除。
-- `auth/users/` 保存加密后的用户登录态 / Cookie。执行 `/esj logout` 或 `/esj clear cookies` 会清理对应登录态。
-- `debug/auth/` 保存登录、Cookie 校验等认证流程调试文件。
+- `auth/users/` 保存加密后的用户登录态 / Cookie，不保存账号密码。执行 `/esj logout` 或 `/esj clear cookies` 会清理对应登录态。
+- `debug/auth/` 保存登录、Cookie 校验等认证流程调试文件；默认不保存认证页面，仅在 `debug.enabled=true` 且 `debug.save_auth_pages=true` 时写入。
 - `debug/pages/` 保存详情页、章节页、下载诊断 JSON、图片处理诊断等调试文件。
 - `debug/*` 仅在调试配置开启时写入，可能包含敏感登录态、页面内容或请求诊断信息，排查完成后建议关闭调试并按需删除。
 - `users/<user_hash>/favorites/cache.json` 保存当前用户的收藏列表缓存，包括书名、详情页、最新章节、最后观看章节和更新日期。
@@ -284,7 +294,7 @@ data/plugin_data/astrbot_plugin_esjzone_downloader/
 - `books/<book_id>/outputs/` 保存导出的 EPUB / TXT 文件。
 - `books/<book_id>/packages/` 保存最终发送用 ZIP 压缩包。执行 `/esj clear outputs` 会清理 `outputs/` 和 `packages/`。
 - `books/<book_id>/logs/` 预留用于书籍相关日志。
-- 删除 `auth/secret.key` 会导致旧登录数据无法解密；如需彻底重置登录态，请同时清理 `auth/users/` 后重新登录。
+- 删除 `auth/secret.key` 会导致旧登录态 Cookie 无法解密；如需彻底重置登录态，请同时清理 `auth/users/` 后重新登录。
 - 如需删除单本书籍本地数据，可使用 `/esj clear book <编号>`。
 
 ---

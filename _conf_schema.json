@@ -156,7 +156,8 @@
       "save_auth_pages": {
         "description": "保存登录与个人资料页调试文件",
         "type": "bool",
-        "default": true
+        "default": false,
+        "hint": "认证调试文件可能包含个人资料页内容或登录态诊断信息。仅建议本地排查时临时开启，排查后请立即关闭并清理 debug/auth。"
       },
       "save_chapter_pages": {
         "description": "保存章节页 HTML",
