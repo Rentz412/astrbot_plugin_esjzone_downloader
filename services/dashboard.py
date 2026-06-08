@@ -243,7 +243,7 @@ class DashboardService:
         return {
             "name": "astrbot_plugin_esjzone_downloader",
             "display_name": "ESJZone 小说下载器",
-            "version": "v2.2.0",
+            "version": "v2.3.0",
             "author": "Rentz",
             "repo": "https://github.com/Rentz412/astrbot_plugin_esjzone_downloader",
             "logo_url": "dashboard/logo",

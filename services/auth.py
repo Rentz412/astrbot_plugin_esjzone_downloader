@@ -32,6 +32,7 @@ ALLOWED_COOKIE_DOMAINS = {
     ".esjzone.cc",
     "esjzone.cc",
 }
+USER_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class EsjAuthService:
@@ -90,9 +91,51 @@ class EsjAuthService:
         raw = f"{platform_id}:{sender_id}"
         return hashlib.sha256(raw.encode("utf-8")).hexdigest(), platform_id, sender_id
 
+    @staticmethod
+    def _validate_user_hash(user_hash: str) -> str:
+        """校验用户哈希，防止用户可控内容参与构造本地路径。"""
+        value = str(user_hash or "").strip().lower()
+        if not USER_HASH_RE.fullmatch(value):
+            raise ValueError("invalid user hash")
+        return value
+
+    def _ensure_path_under_users_dir(self, path: Path) -> Path:
+        """确保路径解析后仍位于用户认证目录内。"""
+        resolved = path.resolve()
+        users_root = self.users_dir.resolve()
+        try:
+            resolved.relative_to(users_root)
+        except ValueError as exc:
+            raise ValueError("user auth path escapes users directory") from exc
+        return resolved
+
     def _user_file(self, user_hash: str) -> Path:
         """返回指定用户登录态文件路径。"""
-        return self.users_dir / f"{user_hash}.json"
+        safe_user_hash = self._validate_user_hash(user_hash)
+        return self._ensure_path_under_users_dir(self.users_dir / f"{safe_user_hash}.json")
+
+    def _is_user_file_path(self, path: Path) -> bool:
+        """判断 glob 得到的路径是否为合法用户认证文件。"""
+        try:
+            safe_path = self._ensure_path_under_users_dir(path)
+        except ValueError:
+            return False
+        return safe_path.suffix == ".json" and USER_HASH_RE.fullmatch(safe_path.stem) is not None
+
+    def _write_user_payload(self, user_hash: str, payload: dict[str, Any]) -> None:
+        """按已校验用户哈希安全写入认证 JSON。"""
+        safe_user_hash = self._validate_user_hash(user_hash)
+        safe_path = self._ensure_path_under_users_dir(self.users_dir / f"{safe_user_hash}.json")
+        with safe_path.open("w", encoding="utf-8") as file:
+            json.dump(payload, file, ensure_ascii=False, indent=2)
+
+    def _write_existing_user_file(self, path: Path, payload: dict[str, Any]) -> None:
+        """安全写入由本地 glob 枚举得到的合法用户认证文件。"""
+        safe_path = self._ensure_path_under_users_dir(path)
+        if safe_path.suffix != ".json" or USER_HASH_RE.fullmatch(safe_path.stem) is None:
+            raise ValueError("invalid user auth file")
+        with safe_path.open("w", encoding="utf-8") as file:
+            json.dump(payload, file, ensure_ascii=False, indent=2)
 
     @staticmethod
     def _strip_legacy_credentials(payload: dict[str, Any]) -> bool:
@@ -114,12 +157,14 @@ class EsjAuthService:
         """启动时批量清理旧认证文件中遗留的账号密码密文字段。"""
         scrubbed = 0
         for path in self.users_dir.glob("*.json"):
+            if not self._is_user_file_path(path):
+                continue
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
                 if not isinstance(payload, dict):
                     continue
                 if self._strip_legacy_credentials(payload):
-                    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                    self._write_existing_user_file(path, payload)
                     scrubbed += 1
             except Exception:
                 if self.logger:
@@ -422,7 +467,7 @@ class EsjAuthService:
                 "cookie_summary": self._cookie_summary_from_rows(result.cookie_jar),
             },
         )
-        self._user_file(user_hash).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        self._write_user_payload(user_hash, payload)
 
     async def refresh_cookie(self, user_hash: str) -> AuthResult:
         """Cookie 失效后不使用本地密码刷新，要求用户重新登录。"""
@@ -434,7 +479,7 @@ class EsjAuthService:
                     payload["status"] = "invalid"
                     payload["last_check_at"] = int(time.time())
                     payload["invalid_reason"] = "cookie_expired_relogin_required"
-                    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                    self._write_user_payload(user_hash, payload)
             except Exception:
                 if self.logger:
                     self.logger.warning("标记认证文件失效失败", exc_info=True)
@@ -450,7 +495,7 @@ class EsjAuthService:
         payload = json.loads(path.read_text(encoding="utf-8"))
         legacy_scrubbed = self._strip_legacy_credentials(payload)
         if legacy_scrubbed:
-            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            self._write_user_payload(user_hash, payload)
 
         cookie = self._decrypt(payload.get("cookie_header_encrypted", ""))
         cookie_jar: list[dict[str, Any]] = []
@@ -485,7 +530,7 @@ class EsjAuthService:
         payload["last_check_at"] = int(time.time())
 
         if validation.valid:
-            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            self._write_user_payload(user_hash, payload)
             return AuthContext(
                 user_hash=user_hash,
                 platform_id=platform_id,
@@ -497,7 +542,7 @@ class EsjAuthService:
             )
 
         if validation.unknown:
-            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            self._write_user_payload(user_hash, payload)
             return None
 
         await self.refresh_cookie(user_hash)
@@ -523,6 +568,8 @@ class EsjAuthService:
         """清空所有已保存的用户登录态。"""
         count = 0
         for path in self.users_dir.glob("*.json"):
+            if not self._is_user_file_path(path):
+                continue
             path.unlink()
             count += 1
         return count

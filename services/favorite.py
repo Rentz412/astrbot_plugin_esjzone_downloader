@@ -23,6 +23,7 @@ BASE_URLS = ("https://www.esjzone.one", "https://www.esjzone.cc")
 DETAIL_RE = re.compile(r"/detail/(\d+)(?:\.html)?/?")
 BOOT_PAG_TOTAL_RE = re.compile(r"bootpag\s*\(\s*\{.*?total\s*:\s*(\d+)", re.IGNORECASE | re.DOTALL)
 FAVORITE_PAGE_RE = re.compile(r"/my/favorite/(\d+)")
+USER_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class FavoriteRefreshCooldown(Exception):
@@ -72,15 +73,46 @@ class FavoriteService:
         ts = int(timestamp or time.time())
         return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
 
+    @staticmethod
+    def _validate_user_hash(user_hash: str) -> str:
+        """校验用户哈希，防止用户可控内容参与构造本地路径。"""
+        value = str(user_hash or "").strip().lower()
+        if not USER_HASH_RE.fullmatch(value):
+            raise ValueError("invalid user hash")
+        return value
+
+    def _ensure_path_under_users_dir(self, path: Path) -> Path:
+        """确保路径解析后仍位于收藏用户目录内。"""
+        resolved = path.resolve()
+        users_root = self.users_dir.resolve()
+        try:
+            resolved.relative_to(users_root)
+        except ValueError as exc:
+            raise ValueError("favorite path escapes users directory") from exc
+        return resolved
+
+    def _favorite_cache_file(self, auth: AuthContext) -> Path:
+        """按已校验用户哈希返回收藏缓存 JSON 路径。"""
+        safe_user_hash = self._validate_user_hash(auth.user_hash)
+        return self._ensure_path_under_users_dir(self.users_dir / safe_user_hash / "favorites" / "cache.json")
+
+    def _write_cache_payload(self, auth: AuthContext, payload: dict[str, Any]) -> None:
+        """安全写入当前用户收藏缓存 JSON。"""
+        safe_path = self._favorite_cache_file(auth)
+        safe_path.parent.mkdir(parents=True, exist_ok=True)
+        with safe_path.open("w", encoding="utf-8") as file:
+            json.dump(payload, file, ensure_ascii=False, indent=2)
+
     def favorites_dir(self, auth: AuthContext) -> Path:
         """返回当前用户收藏缓存目录。"""
-        path = self.users_dir / auth.user_hash / "favorites"
+        safe_user_hash = self._validate_user_hash(auth.user_hash)
+        path = self._ensure_path_under_users_dir(self.users_dir / safe_user_hash / "favorites")
         path.mkdir(parents=True, exist_ok=True)
         return path
 
     def cache_path(self, auth: AuthContext) -> Path:
         """返回当前用户收藏缓存文件路径。"""
-        return self.favorites_dir(auth) / "cache.json"
+        return self._favorite_cache_file(auth)
 
     def pages_dir(self, auth: AuthContext) -> Path:
         """返回当前用户收藏页 HTML 调试目录。"""
@@ -188,7 +220,7 @@ class FavoriteService:
         """保存抓取结果。"""
         old_payload = self.load_cache_payload(auth)
         payload = self._result_to_payload(auth, result, old_payload=old_payload, manual_refresh=manual_refresh)
-        self.cache_path(auth).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        self._write_cache_payload(auth, payload)
 
     def mark_manual_attempt(self, auth: AuthContext) -> None:
         """记录一次手动刷新尝试。"""
@@ -205,7 +237,7 @@ class FavoriteService:
         payload["manual_refresh_attempt_at"] = now
         payload["manual_refresh_attempt_at_text"] = self.format_time(now)
         payload["manual_refresh_cd_seconds"] = self.manual_cd()
-        self.cache_path(auth).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        self._write_cache_payload(auth, payload)
 
     def manual_refresh_remaining(self, auth: AuthContext) -> int:
         """返回手动刷新剩余冷却秒数。"""

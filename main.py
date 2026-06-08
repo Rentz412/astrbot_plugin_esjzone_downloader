@@ -30,7 +30,7 @@ PLUGIN_NAME = "astrbot_plugin_esjzone_downloader"
     PLUGIN_NAME,
     "Rentz",
     "ESJZone 小说下载器，支持登录、EPUB/TXT 导出和 ZIP 打包。",
-    "2.2.0",
+    "2.3.0",
 )
 class EsjZoneDownloaderPlugin(Star):
     """AstrBot 插件主类，负责连接聊天命令与底层下载服务。"""
