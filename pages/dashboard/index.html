@@ -5,6 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>ESJZone 小说下载器</title>
     <link rel="stylesheet" href="./style.css" />
+    <script>
+      // 在首帧绘制前应用已保存的主题，避免浅色用户刷新时闪一下深色。无保存偏好则保持默认深色。
+      try {
+        var t = localStorage.getItem('esj-dashboard-theme');
+        if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="app" class="app-shell">
@@ -15,7 +22,7 @@
           <div class="brand-copy">
             <div class="brand-line">
               <h1 id="pluginName">ESJZone 小说下载器</h1>
-              <span id="pluginVersion" class="version-pill">v2.3.0</span>
+              <span id="pluginVersion" class="version-pill">v2.4.0</span>
             </div>
             <div class="brand-meta">
               <span id="pluginAuthor">作者：Rentz</span>
@@ -28,6 +35,9 @@
         </div>
 
         <div class="topbar-actions">
+          <button id="themeToggle" class="theme-toggle" type="button" aria-label="切换主题" title="切换主题">
+            <span class="icon icon-sun"></span>
+          </button>
           <button id="refreshBtn" class="btn btn-soft" type="button">
             <span class="icon icon-refresh-cw"></span>
             <span>刷新</span>

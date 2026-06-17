@@ -1,5 +1,7 @@
-/* ===== 设计变量（深色主题） ===== */
+/* ===== 设计变量 ===== */
+/* :root 即深色主题（默认）；浅色主题由下方 [data-theme="light"] 覆盖颜色变量。 */
 :root {
+  color-scheme: dark;
   --bg: #0f1219;
   --surface: #1a1f2e;
   --surface-hover: #232838;
@@ -9,12 +11,19 @@
   --text-tertiary: #64748b;
   --primary: #818cf8;
   --primary-soft: rgba(129, 140, 248, 0.22);
+  --primary-soft-hover: rgba(129, 140, 248, 0.2);
   --danger: #fb7185;
   --danger-soft: rgba(251, 113, 133, 0.22);
+  --danger-soft-hover: rgba(251, 113, 133, 0.2);
+  --danger-hover: #e11d48;
   --success: #34d399;
   --success-soft: rgba(52, 211, 153, 0.22);
+  --success-soft-hover: rgba(52, 211, 153, 0.2);
   --warning: #fbbf24;
   --warning-soft: rgba(251, 191, 36, 0.22);
+  --muted-soft: rgba(100, 116, 139, 0.15);
+  --cover-bg: #141824;
+  --backdrop: rgba(0, 0, 0, 0.6);
   --radius-sm: 8px;
   --radius-md: 14px;
   --radius-lg: 20px;
@@ -25,6 +34,36 @@
   --topbar-h: 72px;
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans SC", sans-serif;
   --transition: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ===== 浅色主题（data-theme="light" 覆盖颜色变量） ===== */
+[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --surface-hover: #f1f5f9;
+  --border: #e2e8f0;
+  --text: #1e293b;
+  --text-secondary: #64748b;
+  --text-tertiary: #94a3b8;
+  --primary: #6366f1;
+  --primary-soft: rgba(99, 102, 241, 0.12);
+  --primary-soft-hover: rgba(99, 102, 241, 0.2);
+  --danger: #e11d48;
+  --danger-soft: rgba(225, 29, 72, 0.1);
+  --danger-soft-hover: rgba(225, 29, 72, 0.18);
+  --danger-hover: #be123c;
+  --success: #059669;
+  --success-soft: rgba(5, 150, 105, 0.12);
+  --success-soft-hover: rgba(5, 150, 105, 0.2);
+  --warning: #d97706;
+  --warning-soft: rgba(217, 119, 6, 0.14);
+  --muted-soft: rgba(100, 116, 139, 0.12);
+  --cover-bg: #eef1f5;
+  --backdrop: rgba(15, 23, 42, 0.45);
+  --shadow-sm: 0 1px 3px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.08), 0 2px 4px rgba(15, 23, 42, 0.05);
+  --shadow-lg: 0 10px 30px rgba(15, 23, 42, 0.12);
 }
 
 /* ===== 基础重置 ===== */
@@ -70,6 +109,18 @@ input { font: inherit; }
 .icon-trash-2 { background-image: url('./assets/icons/trash-2.svg'); }
 .icon-triangle-alert { background-image: url('./assets/icons/triangle-alert.svg'); }
 .icon-users { background-image: url('./assets/icons/users.svg'); }
+.icon-sun { background-image: url('./assets/icons/sun.svg'); }
+.icon-moon { background-image: url('./assets/icons/moon.svg'); }
+
+/* 浅色主题图标：普通图标不反相（lucide 黑色描边直接显示在浅底上）。 */
+[data-theme="light"] .icon { filter: none; }
+/* GitHub 是 fill:#FFF 白色单色剪影：浅色下不反色，改垫深色圆盘。
+   白猫放大到接近铺满，深色圆盘只露出很细一圈，纯作衬托描边。 */
+[data-theme="light"] .icon-github {
+  background-color: var(--text);
+  background-size: 86%;
+  border-radius: 50%;
+}
 
 /* ===== 应用外壳 ===== */
 .app-shell {
@@ -154,17 +205,17 @@ input { font: inherit; }
   background: var(--primary-soft);
   color: var(--primary);
 }
-.btn-soft:hover { background: rgba(129, 140, 248, 0.2); }
+.btn-soft:hover { background: var(--primary-soft-hover); }
 .btn-danger-soft {
   background: var(--danger-soft);
   color: var(--danger);
 }
-.btn-danger-soft:hover { background: rgba(251, 113, 133, 0.2); }
+.btn-danger-soft:hover { background: var(--danger-soft-hover); }
 .btn-danger {
   background: var(--danger);
   color: #fff;
 }
-.btn-danger:hover { background: #e11d48; }
+.btn-danger:hover { background: var(--danger-hover); }
 .btn-ghost {
   background: transparent;
   color: var(--text-secondary);
@@ -175,12 +226,27 @@ input { font: inherit; }
   background: var(--success-soft);
   color: var(--success);
 }
-.btn-success-soft:hover { background: rgba(52, 211, 153, 0.2); }
+.btn-success-soft:hover { background: var(--success-soft-hover); }
 .btn:disabled {
   opacity: 0.5;
   pointer-events: none;
 }
 .btn .icon { width: 16px; height: 16px; }
+
+/* 主题切换图标按钮 */
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+  transition: border-color var(--transition), background var(--transition);
+}
+.theme-toggle:hover { border-color: var(--primary); background: var(--surface); }
+.theme-toggle .icon { width: 18px; height: 18px; }
 
 /* ===== 主工作区与视图切换 ===== */
 .workspace {
@@ -288,7 +354,7 @@ input { font: inherit; }
   width: 100%;
   aspect-ratio: 3 / 4;
   object-fit: cover;
-  background: #141824;
+  background: var(--cover-bg);
 }
 /* 封面未加载或加载失败时显示的占位区域，由 app.js 控制显隐。 */
 .book-card-cover-placeholder {
@@ -297,7 +363,7 @@ input { font: inherit; }
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #141824;
+  background: var(--cover-bg);
 }
 .book-card-cover-placeholder .icon {
   width: 48px;
@@ -336,7 +402,7 @@ input { font: inherit; }
 .badge-txt { background: var(--success-soft); color: var(--success); }
 .badge-warning { background: var(--warning-soft); color: var(--warning); }
 .badge-ready { background: var(--success-soft); color: var(--success); }
-.badge-cached { background: rgba(100, 116, 139, 0.15); color: var(--text-secondary); }
+.badge-cached { background: var(--muted-soft); color: var(--text-secondary); }
 
 .empty-state {
   text-align: center;
@@ -373,7 +439,7 @@ input { font: inherit; }
   box-shadow: var(--shadow-md);
   aspect-ratio: 3 / 4;
   object-fit: cover;
-  background: #141824;
+  background: var(--cover-bg);
 }
 .detail-cover-placeholder {
   width: 100%;
@@ -382,7 +448,7 @@ input { font: inherit; }
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #141824;
+  background: var(--cover-bg);
 }
 .detail-cover-placeholder .icon {
   width: 64px;
@@ -466,7 +532,7 @@ input { font: inherit; }
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.6);
+  background: var(--backdrop);
   display: flex;
   align-items: center;
   justify-content: center;

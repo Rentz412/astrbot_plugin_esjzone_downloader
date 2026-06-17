@@ -6,6 +6,7 @@
 const bridge = window.AstrBotPluginPage;
 
 /* ===== 页面状态 ===== */
+const THEME_KEY = 'esj-dashboard-theme';
 let cache = null;
 let currentBookId = null;
 let pluginName = 'astrbot_plugin_esjzone_downloader';
@@ -24,6 +25,7 @@ const confirmDialog = $('#confirmDialog');
 
 /* ===== 初始化与事件绑定 ===== */
 async function init() {
+  applyTheme(getInitialTheme());
   await bridge.ready();
   const ctx = bridge.getContext();
   if (ctx && ctx.pluginName) pluginName = ctx.pluginName;
@@ -32,6 +34,7 @@ async function init() {
 }
 
 function bindEvents() {
+  $('#themeToggle').addEventListener('click', toggleTheme);
   $('#refreshBtn').addEventListener('click', handleRefresh);
   $('#clearAllFilesBtn').addEventListener('click', () => confirmAction(
     '清除所有书籍文件？',
@@ -46,6 +49,36 @@ function bindEvents() {
   $('#backBtn').addEventListener('click', showLibrary);
   searchInput.addEventListener('input', renderBooks);
   $('#cancelConfirmBtn').addEventListener('click', hideConfirm);
+}
+
+/* ===== 主题切换（深色/浅色） ===== */
+function getInitialTheme() {
+  // 读取浏览器保存的偏好；无保存偏好时首次固定深色。
+  try {
+    const saved = localStorage.getItem(THEME_KEY);
+    if (saved === 'light' || saved === 'dark') return saved;
+  } catch (e) {}
+  return 'dark';
+}
+
+function applyTheme(theme) {
+  const t = theme === 'light' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', t);
+  const btn = $('#themeToggle');
+  if (!btn) return;
+  // 按钮显示“目标主题”图标：深色态显示太阳（点击转浅色），浅色态显示月亮（点击转深色）。
+  const iconEl = btn.querySelector('.icon');
+  if (iconEl) iconEl.className = t === 'light' ? 'icon icon-moon' : 'icon icon-sun';
+  const label = t === 'light' ? '切换到深色主题' : '切换到浅色主题';
+  btn.setAttribute('aria-label', label);
+  btn.setAttribute('title', label);
+}
+
+function toggleTheme() {
+  const current = document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+  const next = current === 'light' ? 'dark' : 'light';
+  applyTheme(next);
+  try { localStorage.setItem(THEME_KEY, next); } catch (e) {}
 }
 
 /* ===== 数据加载与后端操作 ===== */
